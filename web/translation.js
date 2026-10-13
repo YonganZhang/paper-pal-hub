@@ -5,19 +5,22 @@
   if (!editor || !pane) return;
   const prefix = location.pathname.replace(/\/$/, '');
   const toolbar = document.createElement('div'); toolbar.className = 'hub-reading-toolbar';
-  toolbar.setAttribute('aria-label','阅读语言');
+  toolbar.setAttribute('aria-label','翻译与阅读');
   const view = document.createElement('section'); view.id = 'hub-translation-view'; view.hidden = true;
   view.setAttribute('aria-label','中文辅助阅读');
   const status = document.createElement('span'); status.className = 'hub-translation-status'; status.setAttribute('role','status');
   let mode = 'original', epoch = 0, path = '', sourceText = '', blocks = [], translations = [], originalScroll = 0;
   const buttons = {};
   const completedViews=new Map();
-  for (const [id, label] of [['original','英文原文'],['chinese','中文阅读'],['bilingual','中英对照']]) {
+  for (const [id, label] of [['original','英文原文'],['chinese','翻译成中文'],['bilingual','中英对照']]) {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
     button.dataset.readingMode = id; button.setAttribute('aria-pressed',String(id===mode));
-    button.addEventListener('click', () => choose(id)); buttons[id] = button; toolbar.append(button);
+    button.addEventListener('click', () => { revealReading(); void choose(id); }); buttons[id] = button; toolbar.append(button);
   }
-  toolbar.append(status); editor.before(toolbar); editor.after(view);
+  toolbar.append(status);
+  const header=document.querySelector('.topbar');
+  if(header)header.append(toolbar);else editor.before(toolbar);
+  editor.after(view);
   const engine=document.createElement('select');engine.setAttribute('aria-label','翻译方式');
   for(const [value,label] of [['offline','机器速译 · CPU'],['ai','AI 精译']]){const option=document.createElement('option');option.value=value;option.textContent=label;engine.append(option);}
   toolbar.insertBefore(engine,status);
@@ -71,8 +74,13 @@
     editor.hidden = mode !== 'original'; view.hidden = mode === 'original';
     for (const [id,button] of Object.entries(buttons)) button.setAttribute('aria-pressed',String(id===mode));
     // Structural workspace has its own visibility contract.
-    if (!document.querySelector('#structure-workspace')?.hidden) { view.hidden = true; toolbar.hidden = true; }
-    else toolbar.hidden = false;
+    if (document.querySelector('#structure-workspace')?.hidden===false) view.hidden = true;
+    toolbar.hidden = false;
+  }
+  function revealReading() {
+    if(document.querySelector('#structure-workspace')?.hidden===false)document.querySelector('#show-text-workspace')?.click();
+    if(document.body.dataset.mobilePanel)document.querySelector('.hub-close-panel')?.click();
+    if(document.querySelector('#paper-preview')?.hidden===false)document.querySelector('#close-paper-preview')?.click();
   }
   async function choose(next) {
     if (mode === 'original' && next !== 'original') originalScroll = pane.scrollTop;
@@ -128,6 +136,6 @@
     epoch++;sourceText='';translations=[];
     if(mode!=='original')void choose(mode);
   });
-  document.querySelector('#show-structure-workspace')?.addEventListener('click',()=>{toolbar.hidden=true;view.hidden=true;});
+  document.querySelector('#show-structure-workspace')?.addEventListener('click',()=>{view.hidden=true;});
   document.querySelector('#show-text-workspace')?.addEventListener('click',()=>{mode='original';setVisible();});
 })();

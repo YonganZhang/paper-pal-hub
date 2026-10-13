@@ -230,3 +230,12 @@ retained. Dependencies and optional translation models retain their own licenses
 PyMuPDF uses AGPL/commercial terms, and the separately downloaded OPUS-MT-derived
 translation model requires CC BY 4.0 attribution. No manuscript, dataset, login,
 AI conversation or model weight is distributed here.
+
+When a worker creates a Page through run-code, it binds the global send guard
+to that same Page using an in-memory target token. The CLI current tab must not
+be assumed to follow a newly created Page. Missing or duplicate targets fail closed.
+
+Reading controls stay in the persistent paper header: **英文原文**,
+**翻译成中文**, and **中英对照**. An explicit language click returns from the
+structure/PDF/mobile drawer to reading; background translation refreshes preserve
+an open AI drawer. Translation remains a separate read-only view of the chapter.

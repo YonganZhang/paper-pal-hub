@@ -43,3 +43,19 @@
  body[data-mobile-panel="ai"] .codex-chat-composer-actions{margin-top:4px;flex-wrap:nowrap}
  body[data-mobile-panel="ai"] .hub-ai-help{font-size:10px;margin-bottom:3px}
 }
+
+/* Translation stays in the measured header while the manuscript scrolls. */
+.topbar>.hub-reading-toolbar{flex:1 0 100%;min-width:0;width:100%;padding:6px 0 0;border-top:1px solid var(--line);border-bottom:0}
+.topbar>.hub-reading-toolbar button{min-height:40px}
+.topbar>.hub-reading-toolbar [data-reading-mode="chinese"]{font-weight:600;border-color:var(--accent);color:var(--accent-ink)}
+@media(max-width:1100px){
+ .topbar>.hub-reading-toolbar{gap:5px;padding-top:6px}
+ .topbar>.hub-reading-toolbar button{flex:1 1 28%;min-width:0;min-height:44px;padding:5px 6px;font-size:13px;white-space:nowrap}
+ .topbar>.hub-reading-toolbar select{min-height:36px}
+}
+@media(min-width:1101px){
+ .app-shell{grid-template-rows:auto minmax(0,1fr)}
+ .topbar{grid-template-rows:56px auto}
+ .topbar>.hub-reading-toolbar{grid-column:1 / -1;padding:6px 16px 8px}
+ body{--topbar-h:var(--hub-header-height,112px)}
+}

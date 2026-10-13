@@ -11,7 +11,7 @@ async page=>{
     await route.fulfill({json:{id:'reading-artifacts',status:'done',translations:texts.map(t=>'译文 '+t),total:texts.length,completed:texts.length}});
   });
   try{
-    await page.getByRole('button',{name:'中文阅读',exact:true}).click();
+    await page.getByRole('button',{name:'翻译成中文',exact:true}).click();
     await page.waitForFunction(()=>document.querySelector('.hub-translation-status').textContent.includes('中文辅助阅读'));
     const translated=await page.locator('#hub-translation-view a').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('href')));
     check(hrefs.every(href=>translated.includes(href)),'Chinese view lost original figure PDF destinations');
