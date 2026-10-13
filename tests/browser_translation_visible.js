@@ -1,7 +1,7 @@
 // Authenticated production reading test: real translation; source writes blocked.
 async page=>{
  const checks=[];const check=(ok,name)=>{checks.push({name,passed:!!ok});if(!ok)throw new Error(name);};
- await page.locator('#editor .editor-block').first().waitFor({timeout:60000});
+ await page.locator('#editor .editor-block').first().waitFor({state:'attached',timeout:60000});
  await page.getByRole('button',{name:'英文原文',exact:true}).click();
  const source=await page.evaluate(()=>JSON.stringify(window.paperHubTranslationSnapshot().texts));
  let translations=0,blockedWrites=0;

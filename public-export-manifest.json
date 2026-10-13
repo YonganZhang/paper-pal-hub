@@ -42,7 +42,7 @@
     "tests/browser_translation_quality.js": "7d4820bf118b8c53cf030385485f2f44998f9162b097071ce3e7afe30f3e3aff",
     "tests/browser_translation_races.js": "630613d4a00c972ee94cbddd2053dac76f14ad019bce92e5ceb5ce78852b1d99",
     "tests/browser_translation_semantics.js": "245884e8088656e2c9c957a147fe5d1e013b0f66d2e4032d9800264950b10b78",
-    "tests/browser_translation_visible.js": "2dae67406fb11f1a3042dc7208205938c65d1c22cc710a68c8d476855bae943d",
+    "tests/browser_translation_visible.js": "f8c11880e6916d4cca35436fc1af8aefa9505b401f29f0512924360665f77156",
     "tests/browser_versions.js": "f6117b33fbbb3a6efbd17c0fa6b34c3c9aeda2875b3e6af9ea1ea64609904ed8",
     "tests/consultation_contract.test.mjs": "44dbc66e5b3744c1195fa9575ec7d295767342500d40a98f10805b95e36dfd83",
     "tests/figure_task_contract.test.mjs": "1a2bb146508161389905f6e3a04ff82f7916b0717284f7e793c085882e407d4c",
