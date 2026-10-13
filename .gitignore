@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+_tmp/
+_tests/_artifacts/
+.playwright-cli/
+.env
+_reports/_foreign_aid/

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>登录 · 论文共改</title>
+  <link rel="icon" type="image/svg+xml" href="/hub-assets/icon.svg">
+  <link rel="stylesheet" href="/hub-assets/login.css">
+</head>
+<body>
+  <main class="login-card">
+    <p class="wordmark">论文共改</p>
+    <h1>继续你的论文审阅</h1>
+    <p class="intro">登录私人论文库，阅读、批注并确认修改。</p>
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="__NEXT__">
+      <label for="username">账号</label>
+      <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <p class="error" role="alert">__ERROR__</p>
+      <button type="submit">登录论文库 →</button>
+    </form>
+    <p class="note">此浏览器长期保持登录，访问时自动续期。请使用你已有的账号密码。</p>
+  </main>
+</body>
+</html>

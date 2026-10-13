@@ -1,0 +1,44 @@
+{
+  "upstream": "https://github.com/claire1217/paper-pal",
+  "commit": "5103b3acfb05307ab72c8c9255a986011f0df462",
+  "strategy": "Serve a reviewed asset overlay; leave upstream core unchanged.",
+  "assets": {
+    "index.html": "e32352808b138e8f56dd4befffc7a05c3ae4d23d3ec8bc230d9f6cbf070c027e",
+    "app.js": "ccda0b52b6b80c9bee56a31526833c57ad8b8983d99dcffd19668a7450f6857b",
+    "styles.css": "e605d5ccf589af300c11941ab61c366eca762c4bddb050c551a0839dcc5cb38c"
+  },
+  "backend": {
+    "url": "server.mjs",
+    "sha256": "4c77838938845e63d4bc5a57f1f70eed01cb639beac85c1ceacad54819d3503d",
+    "strategy": "Hash-locked Node load hook for chat model propagation and project skill routing; installed source unchanged."
+  },
+  "license": "MIT",
+  "translations": {
+    "offline": {
+      "engine": "argostranslate",
+      "version": "1.11.0",
+      "model": "1.9",
+      "from": "en",
+      "to": "zh",
+      "sha256": "433e7c4f034d87fbe2353161e05f18646d7999452f801a4e1f0378522b9850ab",
+      "upstream": "https://github.com/argosopentech/argos-translate",
+      "license": "MIT",
+      "commit": "63b84ecb46c740c7a7c066d58636434d3e893ebf",
+      "modelLicense": "CC-BY-4.0 (OPUS-MT derivative)",
+      "runtime": "CPU-only, int8, beam_size=1, on-demand subprocess",
+      "cacheVersion": "v3"
+    },
+    "ai": {
+      "providerAdapter": "Paper Pal agent-providers.mjs",
+      "model": "gpt-5.6-luna",
+      "reasoningEffort": "low",
+      "toolsPolicy": "Fully supplied isolated translation; project documents disabled for this one-shot task; no-tool instruction is not a proof of tools unavailable.",
+      "schemaVersion": 2
+    }
+  },
+  "providers": {
+    "url": "agent-providers.mjs",
+    "sha256": "a440a8d1129f3523e76bd96e13096dba8937d26f65616ba97e9d7cd4c880f681",
+    "strategy": "CLI-only subscription guard; official clients own current login, no credential copies."
+  }
+}

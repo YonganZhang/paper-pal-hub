@@ -1,0 +1,14 @@
+*{box-sizing:border-box}
+html{min-height:100%;background:#f5f5f0;color:#202d29;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+body{margin:0;min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:32px 20px;padding-bottom:max(32px,env(safe-area-inset-bottom))}
+.login-card{width:100%;max-width:430px;background:#fff;padding:36px;border:1px solid #dce3db;border-radius:20px;box-shadow:0 18px 60px #243a2810}
+.wordmark{margin:0 0 40px;font-size:18px;font-weight:700;color:#395c48}
+h1{font-size:26px;line-height:1.4;margin:0 0 12px;letter-spacing:-.5px}
+.intro,.note{font-size:14px;line-height:1.7;color:#65756a;margin:0 0 28px}
+label{display:block;font-size:14px;font-weight:600;margin:20px 0 8px}
+input:not([type="hidden"]){width:100%;min-height:48px;padding:12px;border:1px solid #bbcabb;border-radius:8px;background:#fbfcfa;color:#202d29;font-family:inherit;font-size:16px}
+input:focus-visible,button:focus-visible{outline:3px solid #8cb89b;outline-offset:2px}
+button{width:100%;min-height:50px;padding:12px;border:0;border-radius:9px;background:#33583e;color:#fff;font:600 16px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;cursor:pointer}
+.error{color:#a3382e;font-size:14px;line-height:1.5;margin:12px 0}.error:empty{display:none}
+.note{margin:20px 0 0;font-size:12px}
+@media(max-width:480px){.login-card{padding:28px 24px;border-radius:16px}.wordmark{margin-bottom:32px}h1{font-size:24px}}
