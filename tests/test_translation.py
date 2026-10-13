@@ -11,7 +11,7 @@ from unittest.mock import patch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from translation import TranslationJobs, project_glossary, project_ai_model, stop_process_group, ENGINE
+from translation import TranslationJobs, project_glossary, project_ai_model, worker_environment, stop_process_group, ENGINE
 
 
 class TranslationTests(unittest.IsolatedAsyncioTestCase):
@@ -68,6 +68,16 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         with patch('translation.os.killpg') as kill, self.assertLogs('translation', level='WARNING'):
             await asyncio.wait_for(stop_process_group(StuckProcess(), grace=.01), .1)
         self.assertEqual(kill.call_count, 2)
+
+    async def test_browser_runtime_environment_is_only_passed_to_browser_workers(self):
+        source={'HOME':'/same-user','XDG_RUNTIME_DIR':'/run/user/42','DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/42/bus',
+                'CHATGPT_WEB_WRITE_LOCK':'/shared/consult/lock','CHATGPT_WEB_CDP':'http://127.0.0.1:19223','ANTHROPIC_API_KEY':'unused'}
+        plain=worker_environment(source,self.jobs.root)
+        browser=worker_environment(source,self.jobs.root,browser=True)
+        for key in ('XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS','CHATGPT_WEB_WRITE_LOCK','CHATGPT_WEB_CDP'):
+            self.assertNotIn(key,plain)
+            self.assertEqual(browser[key],source[key])
+        self.assertNotIn('ANTHROPIC_API_KEY',browser)
 
     async def test_ai_model_reaches_worker_and_separates_cached_translations(self):
         repo=Path(self.papers[0]['repo'])

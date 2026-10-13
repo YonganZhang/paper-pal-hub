@@ -20,7 +20,18 @@
         link.href=figure.asset_url;link.target='_blank';link.rel='noopener';link.title='打开原始图文件';
         const image=document.createElement('img');image.className='latex-figure-image';image.loading='lazy';
         image.alt=figure.title;image.src=figure.preview_url+'&revision='+figure.sha256;
-        image.addEventListener('error',()=>{image.hidden=true;link.append(document.createTextNode('预览暂不可用，点击打开原图 ↗'));},{once:true});
+        const fallbackCopy=block.querySelector(':scope > .compiled-fallback > div');
+        if(fallbackCopy)fallbackCopy.hidden=false;
+        image.addEventListener('load',()=>{
+          if(!link.isConnected)return;
+          if(fallbackCopy)fallbackCopy.hidden=true;
+          window.dispatchEvent(new CustomEvent('paper-hub:figures-rendered'));
+        },{once:true});
+        image.addEventListener('error',()=>{
+          if(!link.isConnected)return;
+          if(fallbackCopy)fallbackCopy.hidden=false;
+          image.hidden=true;link.append(document.createTextNode('预览暂不可用，点击打开原图 ↗'));
+        },{once:true});
         link.append(image);
         block.querySelector(':scope > [data-hub-figure-preview]')?.remove();
         link.dataset.hubFigurePreview='1';

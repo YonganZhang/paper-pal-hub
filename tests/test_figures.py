@@ -48,6 +48,8 @@ if 'MAKE_NO_OUTPUT' not in prompt:
  from PIL import Image
  Image.new('RGB',(8,8),'blue').save('candidate.png')
  Path('scripts/draw.py').write_text('# updated staged drawing script\\n')
+if 'REPORT_FAILURE' in prompt:
+ Path('failure-receipt.json').write_text(json.dumps({'reason':'fixture browser needs_login'}))
 if '--json' in sys.argv:
  print(json.dumps({'type':'item.completed','item':{'type':'image_generation_call','status':'completed','model':'fixture-image-model','result':{'b64_json':'fixture-secret-image-data'}}}))
 else:
@@ -102,6 +104,8 @@ else:
         self.assertEqual((self.repo/'figures/main.png').read_bytes(),self.original)
         self.assertEqual((self.repo/'scripts/draw.py').read_text(),'# frozen original script\n')
         workspace = Path(job['workspace_path'])
+        runtime = json.loads((workspace/'browser-runtime.json').read_text())
+        self.assertFalse(Path(runtime['TMPDIR']).exists(), 'completed worker leaked its tool runtime')
         args = json.loads((workspace/'argv.json').read_text())
         self.assertEqual(args[args.index('--sandbox')+1],'workspace-write')
         self.assertEqual(args[args.index('--model')+1],'configured-model')
@@ -110,6 +114,7 @@ else:
         self.assertIn(str(Path.home()/'.ai-shared/rules'),prompt)
         self.assertIn(str(Path.home()/'.agents/skills'),prompt)
         self.assertIn('share-web-consultation',prompt)
+        self.assertIn('failure-receipt.json',prompt)
         self.assertEqual((await self.client.get('/papers/beta/hub/figures/jobs/'+job['id'])).status,404)
         candidate = await self.client.get(job['candidate_url'])
         self.assertEqual(candidate.status,200)
@@ -168,6 +173,13 @@ else:
         self.assertEqual(result.status,400)
         self.assertEqual((self.repo/'figures/main.png').read_bytes(),self.original)
 
+    async def test_actual_tool_failure_is_reported_instead_of_missing_image_only(self):
+        job=await self.wait(await self.start(instruction='MAKE_NO_OUTPUT REPORT_FAILURE'))
+        self.assertEqual(job['status'],'error')
+        self.assertIn('fixture browser needs_login',job['error'])
+        self.assertNotIn('candidate_url',job)
+        self.assertEqual((self.repo/'figures/main.png').read_bytes(),self.original)
+
     async def test_claude_tool_policy_and_request_idempotence(self):
         job = await self.wait(await self.start(provider='claude'))
         self.assertEqual(job['status'],'proposed',job)
@@ -214,6 +226,8 @@ else:
         self.assertEqual(job['status'],'error',job)
         self.assertEqual((self.repo/'figures/main.png').read_bytes(),self.original)
         log = Path(job['manifest_path']).parent/'worker.log'
+        runtime=json.loads((Path(job['workspace_path'])/'browser-runtime.json').read_text())
+        self.assertFalse(Path(runtime['TMPDIR']).exists(), 'forced stop leaked its tool runtime')
         self.assertIn('timed out after 3 seconds', log.read_text())
         self.assertEqual(log.stat().st_mode & 0o777, 0o600)
         pid_path = Path(job['workspace_path'])/'worker-pid.txt'
@@ -260,6 +274,8 @@ else:
         stat=Path('/proc')/str(pid)/'stat'
         self.assertTrue(not stat.exists() or stat.read_text().split()[2]=='Z')
         self.assertFalse(self.studio.tasks)
+        runtime=json.loads((Path(job['workspace_path'])/'browser-runtime.json').read_text())
+        self.assertFalse(Path(runtime['TMPDIR']).exists(), 'cancelled worker leaked its tool runtime')
 
     async def test_interrupted_accept_recovers_and_next_edit_uses_latest_recipe(self):
         job = await self.wait(await self.start())
@@ -288,6 +304,7 @@ else:
             (workspace/'.mpl-cache').mkdir(exist_ok=True)
             (workspace/'.mpl-cache/fontlist.json').write_text('cache')
             (workspace/'assistant-summary.txt').write_text('transient assistant output')
+            (workspace/'browser-runtime.json').write_text('{"TMPDIR":"/tmp/old-job"}')
             Image.new('RGB',(8,8),'blue' if index == 0 else 'green').save(workspace/'candidate.png')
             job.update(status='proposed',candidate_sha256=validate_asset(workspace/'candidate.png'))
             self.studio.persist(job)
@@ -303,6 +320,7 @@ else:
             self.assertEqual(job['input_hashes']['processed.csv'],digest(next_workspace/'processed.csv'))
             self.assertIn('accepted-archive/workspace/processed.csv',job['input_sources']['processed.csv'])
             self.assertFalse((next_workspace/'assistant-summary.txt').exists())
+            self.assertFalse((next_workspace/'browser-runtime.json').exists())
             self.assertFalse((next_workspace/'.mpl-cache').exists())
             self.assertFalse((next_workspace/'candidate.png').exists())
             self.assertEqual(job['original_sha256'],accepted['accepted_sha256'])

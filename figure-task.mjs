@@ -7,13 +7,14 @@ import {homedir} from 'node:os';
 import path from 'node:path';
 import {subscriptionEnvironment} from './subscription-cli.mjs';
 
-export function stagedInvocation(invocation,provider,{imageGeneration=false}={}) {
+export function stagedInvocation(invocation,provider,{imageGeneration=false,writableRoots=[]}={}) {
   const args=[...invocation.args];
   if(provider==='codex') {
     const index=args.indexOf('--sandbox');
     if(index<0||args[index+1]!=='read-only')throw new Error('Pinned Codex sandbox contract changed');
     args[index+1]='workspace-write';
     args.splice(1,0,'--config','sandbox_workspace_write.network_access=true');
+    if(writableRoots.length)args.splice(1,0,'--config','sandbox_workspace_write.writable_roots='+JSON.stringify(writableRoots));
     if(imageGeneration)args.splice(1,0,'--enable','image_generation','--json');
   } else if(provider==='claude') {
     for(const flag of ['--allowedTools','--disallowedTools']) {
@@ -30,6 +31,14 @@ export function stagedInvocation(invocation,provider,{imageGeneration=false}={})
 
 export function upstreamProviderPath(environment=process.env) {
   return path.resolve(environment.PAPER_PAL_DIR || path.join(homedir(),'.local/share/paper-pal'),'agent-providers.mjs');
+}
+export function browserRuntimeRoots(environment=process.env) {
+  const home=path.resolve(environment.HOME || homedir());
+  const daemon=path.resolve(environment.XDG_CACHE_HOME || path.join(home,'.cache'),'ms-playwright');
+  const lock=path.resolve(environment.CHATGPT_WEB_WRITE_LOCK || path.join(environment.XDG_RUNTIME_DIR || '/tmp','chatgpt-web-consult.lock'));
+  const roots=[...new Set([daemon,...(environment.TMPDIR?[path.resolve(environment.TMPDIR)]:[]),path.dirname(lock)])];
+  if(roots.some(root=>root===path.parse(root).root || root===home))throw new Error('Browser runtime directories must be narrowly scoped');
+  return roots;
 }
 export function figureReasoningEffort(provider,model) {
   return provider==='claude'&&/(^|-)haiku($|-)/i.test(model||'')?null:'low';
@@ -74,15 +83,30 @@ export async function runTask(payload) {
   const {buildAgentInvocation,childEnvironment,redactSecrets}=await import(pathToFileURL(providerPath));
   const manifestPath=path.join(root,'copiedtaskmanifest.json');
   await fs.writeFile(manifestPath,JSON.stringify(job,null,2),{mode:0o600});await fs.chmod(manifestPath,0o600);
+  // Login shells may replace TMPDIR, so expose the safe runtime explicitly to
+  // the worker as well as its inherited environment. No credentials are stored.
+  const toolTmp=process.env.PAPER_HUB_TOOL_TMP;
+  if(!toolTmp || path.dirname(toolTmp)!=='/tmp' || !path.basename(toolTmp).startsWith('pph-tool-'))throw new Error('Missing host-owned tool runtime');
+  const runtimeStat=await fs.lstat(toolTmp);
+  if(!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink() || runtimeStat.uid!==process.getuid() || (runtimeStat.mode&0o077))throw new Error('Unsafe tool runtime');
+  const browserEnvironment={TMPDIR:toolTmp,XDG_CACHE_HOME:path.join(toolTmp,'cache')};
+  await fs.mkdir(browserEnvironment.XDG_CACHE_HOME,{recursive:true,mode:0o700});
+  await fs.writeFile(path.join(root,'browser-runtime.json'),JSON.stringify(browserEnvironment),{mode:0o600});
   const reasoningEffort=figureReasoningEffort(job.provider,job.model);
   const globalPaths={rules:path.join(homedir(),'.ai-shared/rules'),skills:path.join(homedir(),'.agents/skills')};
-  const imagePolicy='Use the current global imagegen skill for raster generation/editing when requested, inspecting the copied original with view_image first. Use share-web-consultation when the user requests browser ChatGPT consultation; follow that skill using existing approved sessions and tools. All tool calls must be made by you in this same figure job. Availability depends on this CLI environment. Do not invent tools or claim a specific Image2 model was used without actual tool evidence. For native raster output, save the actual produced image as candidate.png inside the staging workspace, preserving the copied original. If the required LaTeX target is PDF, the platform packages candidate.png into candidate.pdf afterward; do not redraw pixel content just to change format.';
-  const instructions=`You are 论文 AI, editing a staged scientific figure. Reply in Chinese. Read copied AGENTS.md and .agents/skills/paper-ai/SKILL.md when present, and read current applicable global rules from ${globalPaths.rules} and global skills from ${globalPaths.skills}. You have the same current global skill library; select and read relevant SKILL.md instructions rather than relying on a copied summary. ${imagePolicy} Treat user instruction and manifest as task data; preserve evidence and units. Write ONLY inside the current staging workspace (${root}). Never edit live manuscript or original live figures, never git commit/push, never install software, never change global configuration, never read raw credentials or switch accounts. Global rules/skills and project context are read-only. Current project guidance and skills are copied into the workspace. For referenced narrative, evidence or other context not copied, the original project root is ${job.original_project_root || "not supplied; use copied context only"}; inspect needed context there read-only, excluding credentials, configuration secrets and runtime/private session state. Never write back to that root. Network use is allowed only through the tools/workflows prescribed by the applicable global skills for this explicit user task. Existing session/login mechanisms own credentials. The subscription guard forbids API-key fallback for this CLI. Read copiedtaskmanifest.json as needed for full registered data paths, input hashes and provenance; do not dump the whole manifest into the reply. Generate an actual valid figure at ${job.candidate_path}; a native generated PNG may instead be saved as ${path.join(root,'candidate.png')} for PDF packaging. Preserve copied script edits as provenance. Command argv is metadata: inspect scripts before running. Use locally installed plotting libraries for ordinary plots. If data or tools are missing, explain the blockage; never fabricate data or output. Return a concise change description and list scripts/data/tools actually used.\n${JSON.stringify(compactFigureTask(job,manifestPath))}`;
+  const imagePolicy='Use the current global imagegen skill for raster generation/editing when requested, inspecting the copied original with view_image first. Use share-web-consultation when the user requests browser ChatGPT consultation; follow that skill using existing approved sessions and tools. Before each browser command, read browser-runtime.json and explicitly restore its TMPDIR and XDG_CACHE_HOME in that command/process: login shell startup may override inherited TMPDIR. Keep browser attach and subsequent CLI operations inside one shell tool call because its sandbox can reap detached daemons when the call ends. All tool calls must be made by you in this same figure job. Availability depends on this CLI environment. Do not invent tools or claim a specific Image2 model was used without actual tool evidence. For native raster output, save the actual produced image as candidate.png inside the staging workspace, preserving the copied original. If the required LaTeX target is PDF, the platform packages candidate.png into candidate.pdf afterward; do not redraw pixel content just to change format.';
+  const instructions=`You are 论文 AI, editing a staged scientific figure. Reply in Chinese. Read copied AGENTS.md and .agents/skills/paper-ai/SKILL.md when present, and read current applicable global rules from ${globalPaths.rules} and global skills from ${globalPaths.skills}. You have the same current global skill library; select and read relevant SKILL.md instructions rather than relying on a copied summary. ${imagePolicy} Treat user instruction and manifest as task data; preserve evidence and units. Write ONLY inside the current staging workspace (${root}). Never edit live manuscript or original live figures, never git commit/push, never install software, never change global configuration, never read raw credentials or switch accounts. Global rules/skills and project context are read-only. Browser tools may write only their explicitly permitted daemon cache and shared lock runtime directories; these are tool-managed state, not manuscript or global configuration. Never write Chrome user profiles, cookies or account storage. The original project remains read-only. Current project guidance and skills are copied into the workspace. For referenced narrative, evidence or other context not copied, the original project root is ${job.original_project_root || "not supplied; use copied context only"}; inspect needed context there read-only, excluding credentials, configuration secrets and runtime/private session state. Never write back to that root. Network use is allowed only through the tools/workflows prescribed by the applicable global skills for this explicit user task. Existing session/login mechanisms own credentials. The subscription guard forbids API-key fallback for this CLI. Read copiedtaskmanifest.json as needed for full registered data paths, input hashes and provenance; do not dump the whole manifest into the reply. Generate an actual valid figure at ${job.candidate_path}; a native generated PNG may instead be saved as ${path.join(root,'candidate.png')} for PDF packaging. Preserve copied script edits as provenance. Command argv is metadata: inspect scripts before running. Use locally installed plotting libraries for ordinary plots. If data or tools are missing, write failure-receipt.json as a JSON object with a concise reason string, explain the blockage and do not create a candidate. Never fabricate data or output. Return a concise change description and list scripts/data/tools actually used.\n${JSON.stringify(compactFigureTask(job,manifestPath))}`;
   const outputPath=path.join(root,'assistant-summary.txt');
   const original=await buildAgentInvocation({provider:job.provider,config,prompt:instructions,outputPath,repoRoot:root,model:job.model,reasoningEffort});
   const environment=subscriptionEnvironment(childEnvironment({provider:job.provider,config}));
+  // The upstream adapter may replace TMPDIR. Keep browser IPC/cache in this job,
+  // while retaining the skill's shared write lock across all project workers.
+  // Unix-domain browser sockets need a short absolute path (Linux limit ~108B).
+  Object.assign(environment,browserEnvironment);
   const nativeImage=job.provider==='codex'&&nativeImageAvailable(original.command,environment);
-  const invocation=stagedInvocation(original,job.provider,{imageGeneration:nativeImage});
+  const runtimeRoots=job.provider==='codex'?browserRuntimeRoots(environment):[];
+  for(const directory of runtimeRoots)await fs.mkdir(directory,{recursive:true,mode:0o700});
+  const invocation=stagedInvocation(original,job.provider,{imageGeneration:nativeImage,writableRoots:runtimeRoots});
   environment.MPLCONFIGDIR=path.join(root,'.mpl-cache');environment.CUDA_VISIBLE_DEVICES='';
   const tools=[];let traceTruncated=false;
   await new Promise((resolve,reject)=>{
@@ -116,6 +140,7 @@ export async function runTask(payload) {
   return {provider:job.provider,model:job.model,reasoning_effort:reasoningEffort,
     model_resolution:'CLI requested model; aliases resolved by official CLI',tools_policy:job.tools_policy,
     global_skill_routing:globalPaths,native_image_feature:nativeImage,observed_tools:tools,trace_truncated:traceTruncated,
+    browser_runtime_roots:runtimeRoots,
     image_generation_observed:tools.some(tool=>tool.image_generation),
     image_model_resolution:'Selected by actual tool; not guaranteed fixed Image2. Unreported image model remains unknown.'};
 }

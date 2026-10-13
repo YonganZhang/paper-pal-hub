@@ -2,7 +2,7 @@
 async page=>{
   const check=(ok,message)=>{if(!ok)throw new Error(message);};
   await page.locator('#editor .kind-figure').first().waitFor();
-  await page.locator('#editor .compiled-fallback').first().getByText('请在 PDF 中查看原图',{exact:true}).waitFor();
+  await page.locator('#editor .compiled-fallback a').first().waitFor();
   const source=await page.locator('#editor').innerText();
   const hrefs=await page.locator('#editor .compiled-fallback a').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('href')));
   check(hrefs.length>0,'Open a chapter containing compiled figure links');

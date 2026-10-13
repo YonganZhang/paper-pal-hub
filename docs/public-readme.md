@@ -140,6 +140,18 @@ When the official Codex CLI exposes native image generation, figure jobs enable
 that capability and record observed tool calls. Tool availability does not pin a
 particular image model; an unreported image model stays unknown in the receipt.
 
+Staged figure workers keep browser IPC and Playwright cache in a private temporary directory for each job. They retain the global consultation skill's shared write lock and
+user-service environment; browser profile and credential storage are not granted
+write access. A tool failure returns its explicit failure receipt instead of
+being hidden behind a missing-image error. Browser consultation follows the
+skill's login, conversation identity and send guards.
+
+Voice input fills an unsent draft. Closing the mobile AI panel, hiding the page,
+or changing conversations cancels recognition and ignores stale callbacks.
+Manual stop may retain the last completed recognition result. Unsupported or
+denied microphone access falls back to keyboard input. The browser voice fixture
+tests event transitions; physical-device recording still requires device testing.
+
 ## Versions, images and handoff
 
 The first baseline is `0.0`; subsequent explicit archives increment to `1.0`, `2.0`

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {stagedInvocation,upstreamProviderPath,figureReasoningEffort,compactFigureTask,observedTools,safeTrace} from '../figure-task.mjs';
+import {stagedInvocation,upstreamProviderPath,browserRuntimeRoots,figureReasoningEffort,compactFigureTask,observedTools,safeTrace} from '../figure-task.mjs';
 test('Codex staging changes only pinned sandbox and rejects changed contract',()=>{
   const original={command:'codex',args:['exec','--sandbox','read-only','--model','configured']};
   const staged=stagedInvocation(original,'codex');
@@ -47,4 +47,17 @@ test('Image feature flags require availability and tool receipts require actual 
   assert.equal(calls[0].image_generation,true);
   assert.equal(calls[0].model,'observed-tool-model');
   assert.equal(safeTrace({result:{b64_json:'private-image-bytes'}}).includes('private-image-bytes'),false);
+});
+
+test('Browser skill runtime grants exclude profiles and global configuration',()=>{
+  const env={HOME:'/users/author',XDG_CACHE_HOME:'/cache/author',XDG_RUNTIME_DIR:'/run/user/42'};
+  const roots=browserRuntimeRoots(env);
+  assert.deepEqual(roots,['/cache/author/ms-playwright','/run/user/42']);
+  assert.deepEqual(browserRuntimeRoots({...env,TMPDIR:'/tmp/pph-tool-example'}),['/cache/author/ms-playwright','/tmp/pph-tool-example','/run/user/42']);
+  const invocation=stagedInvocation({args:['exec','--sandbox','read-only']},'codex',{writableRoots:roots});
+  assert.ok(invocation.args.includes('sandbox_workspace_write.writable_roots='+JSON.stringify(roots)));
+  assert.equal(invocation.args.includes('danger-full-access'),false);
+  assert.throws(()=>browserRuntimeRoots({...env,CHATGPT_WEB_WRITE_LOCK:'/global.lock'}),/narrowly scoped/);
+  assert.throws(()=>browserRuntimeRoots({...env,CHATGPT_WEB_WRITE_LOCK:'/users/author/lock'}),/narrowly scoped/);
+  assert.deepEqual(browserRuntimeRoots({...env,CHATGPT_WEB_WRITE_LOCK:'/shared/consult/lock'}),['/cache/author/ms-playwright','/shared/consult']);
 });

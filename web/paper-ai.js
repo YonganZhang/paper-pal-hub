@@ -4,6 +4,7 @@
   if (!input || !chat) return;
   const slug = location.pathname.split('/')[2];
   let session = null;
+  let cancelVoice = () => {};
   const memory = new Map();
   const contexts = new Map();
   const key = id => `paper-hub.draft.${slug}.${id || 'opening'}`;
@@ -23,6 +24,7 @@
   window.paperHubChatContext = contextFor;
   window.addEventListener('paper-hub:stage-message', event => {
     const payload=event.detail,id=payload.sessionId;
+    cancelVoice();
     write(session,input.value); session=id; input.dataset.chatSessionId=id;
     input.value = [read(id),payload.message].filter(Boolean).join('\n\n');
     write(id,input.value);
@@ -36,6 +38,7 @@
   window.addEventListener('paper-hub:chat', event => {
     const id = event.detail.id;
     if (id && id !== session) {
+      cancelVoice();
       const opening = !session ? input.value : '';
       write(session, input.value);
       session = id;
@@ -57,7 +60,7 @@
     if(JSON.stringify(latest)===JSON.stringify(context || {}))storeContext(fromId,null);
     else if(active && id!==fromId)storeContext(id,latest);
   });
-  window.addEventListener('pagehide', () => write(session, input.value));
+  window.addEventListener('pagehide', () => { cancelVoice(); write(session, input.value); });
   // Move, rather than duplicate, the upstream model control and state.
   const model = document.querySelector('#agent-model-picker');
   if (model) chat.querySelector('.codex-chat-header').append(model);
@@ -75,18 +78,54 @@
   const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (Speech) {
     const voice = document.createElement('button'); voice.type = 'button'; voice.className = 'text-button'; voice.textContent = '语音输入';
-    const recognition = new Speech(); recognition.lang = 'zh-CN'; recognition.interimResults = false;
-    let listening = false;
-    recognition.onresult = event => {
-      input.value += (input.value ? '\n' : '') + [...event.results].map(r => r[0].transcript).join('');
-      input.dispatchEvent(new Event('input')); input.focus();
+    let active = null;
+    const idle = run => { if(active === run) {
+      active=null;voice.textContent='语音输入';
+      help.textContent='回车换行 · 点击发送才提交 · 草稿自动保留';
+    } };
+    cancelVoice = () => {
+      const run=active;
+      if(!run)return;
+      idle(run); // Invalidate callbacks before stopping; a late result belongs to the old draft.
+      try { if(run.recognition.abort)run.recognition.abort();else run.recognition.stop(); } catch { /* Already ended. */ }
     };
-    recognition.onend = () => { listening = false; voice.textContent = '语音输入'; };
-    recognition.onerror = () => { help.textContent = '语音暂不可用，可使用手机键盘的语音输入；点击发送才提交。'; };
     voice.addEventListener('click', () => {
-      if (listening) recognition.stop();
-      else { try { recognition.start(); listening = true; voice.textContent = '结束录音'; } catch { recognition.onerror(); } }
+      if(active) {
+        // Explicitly finishing may still deliver a final result before onend.
+        try { active.recognition.stop(); } catch { cancelVoice(); }
+        return;
+      }
+      const run={recognition:new Speech(),session,received:new Set()};
+      const recognition=run.recognition;
+      recognition.lang='zh-CN';recognition.interimResults=false;
+      recognition.onresult=event=>{
+        if(active!==run || session!==run.session)return;
+        const added=[];
+        for(let index=event.resultIndex || 0;index<event.results.length;index++) {
+          const result=event.results[index];
+          if(!result.isFinal || run.received.has(index))continue;
+          run.received.add(index);
+          const text=result[0]?.transcript?.trim();if(text)added.push(text);
+        }
+        if(!added.length)return;
+        input.value += (input.value ? '\n' : '') + added.join('\n');
+        input.dispatchEvent(new Event('input'));input.focus();
+      };
+      recognition.onend=()=>idle(run);
+      recognition.onerror=()=>{
+        if(active!==run)return;
+        cancelVoice();
+        help.textContent='语音暂不可用，可使用手机键盘的语音输入；点击发送才提交。';
+      };
+      active=run;voice.textContent='结束录音';
+      help.textContent='正在语音输入 · 只写入草稿，点击发送才提交';
+      try { recognition.start(); } catch { recognition.onerror(); }
     });
+    new MutationObserver(()=>{
+      if(chat.hidden || (matchMedia('(max-width: 1100px)').matches && document.body.dataset.mobilePanel!=='ai'))cancelVoice();
+    }).observe(document.body,{attributes:true,attributeFilter:['data-mobile-panel']});
+    new MutationObserver(()=>{if(chat.hidden)cancelVoice();}).observe(chat,{attributes:true,attributeFilter:['hidden']});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelVoice();});
     chat.querySelector('.codex-chat-composer-actions').prepend(voice);
-  }
+  } else help.textContent='浏览器不支持语音识别，可使用手机键盘的语音输入；点击发送才提交。';
 })();

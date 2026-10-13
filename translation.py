@@ -14,12 +14,14 @@ from aiohttp import web
 ENGINE = 'argos-1.11.0-en-zh-1.9-int8-beam1-v3'
 
 
-def worker_environment(source, task_tmp):
+def worker_environment(source, task_tmp, *, browser=False):
     """Keep runtime, locale, certificate and network settings; no unrelated keys."""
     keep = {'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'CODEX_HOME', 'CODEX_BIN',
             'PAPER_PAL_DIR', 'PAPER_HUB_TRANSLATION_MODEL',
             'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'SSL_CERT_FILE',
             'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE'}
+    if browser:
+        keep |= {'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'CHATGPT_WEB_WRITE_LOCK', 'CHATGPT_WEB_CDP'}
     proxy = {'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'}
     env = {k: v for k, v in source.items() if k in keep or k.startswith('LC_') or k.upper() in proxy}
     env.update(CUDA_VISIBLE_DEVICES='', TOKENIZERS_PARALLELISM='false', TMPDIR=str(task_tmp))

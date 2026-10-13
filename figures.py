@@ -31,7 +31,7 @@ FORMATS = {'.png', '.jpg', '.jpeg', '.svg', '.pdf'}
 CONTEXT_TEXT = {'.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.txt'}
 CONTEXT_DISCOVERY_SKIP = {'_archive', '_legacy', '_tmp', '_drafts', '_snapshots'}
 RUNTIME_PARTS = {'.git', '.paper-pal', '.draft-review', '.mpl-cache', '__pycache__', 'node_modules'}
-RUNTIME_FILES = {'copiedtaskmanifest.json', 'assistant-summary.txt', 'cli-output.txt',
+RUNTIME_FILES = {'copiedtaskmanifest.json', 'assistant-summary.txt', 'cli-output.txt', 'browser-runtime.json',
                  'argv.json', 'env.json', 'received-prompt.txt', 'worker-pid.txt'}
 
 
@@ -522,6 +522,7 @@ class FigureStudio:
 
     async def run(self, slug, job, config):
         process = None
+        tool_runtime = None
         acquired = cancelled = False
         terminal = {}
         try:
@@ -531,7 +532,10 @@ class FigureStudio:
             self.persist(job)
             workspace = Path(job['workspace_path'])
             payload = {'job':job,'config':{key:config.get(key,{}) for key in ('codex','claude')}}
-            environment = worker_environment(os.environ, workspace)
+            environment = worker_environment(os.environ, workspace, browser=True)
+            # Host owns the short socket/cache directory, including forced-stop cleanup.
+            tool_runtime = tempfile.TemporaryDirectory(prefix='pph-tool-',dir='/tmp')
+            environment['PAPER_HUB_TOOL_TMP'] = tool_runtime.name
             if os.environ.get('PAPER_PAL_DIR'):
                 environment['PAPER_PAL_DIR'] = os.environ['PAPER_PAL_DIR']
             process = await asyncio.create_subprocess_exec('node',str(self.root/'figure-task.mjs'),
@@ -558,6 +562,14 @@ class FigureStudio:
                 await asyncio.to_thread(package_raster_pdf,raster,candidate)
                 job['raster_packaging'] = {'source':'candidate.png','source_sha256':digest(raster),
                     'conversion':'Pillow raster to PDF; no image editing'}
+            failure = workspace/'failure-receipt.json'
+            if not candidate.exists() and failure.is_file() and not failure.is_symlink() and failure.stat().st_size <= 16384:
+                try:
+                    reason = json.loads(failure.read_text()).get('reason')
+                except (OSError, ValueError, AttributeError):
+                    reason = None
+                if isinstance(reason,str) and reason.strip():
+                    raise ValueError('论文AI未完成任务：'+reason[:1000])
             candidate_hash = validate_asset(candidate)
             files = safe_tree_files(workspace)
             terminal.update(status='proposed',finished_at=now(),candidate_sha256=candidate_hash,
@@ -590,6 +602,11 @@ class FigureStudio:
                     stopping.result()
                 except Exception as error:
                     terminal.update(status='error',error=str(error),finished_at=now())
+            if tool_runtime:
+                try:
+                    tool_runtime.cleanup()
+                except OSError as error:
+                    terminal.update(status='error',error='工具临时目录清理失败：'+str(error),finished_at=now())
             try:
                 job.update(terminal)
                 self.persist(job)
