@@ -79,6 +79,14 @@ progress. `translation.aiProvider` accepts only Codex/Claude subscriptions;
 `translation.aiModel` and gateway equivalents configure the model. Defaults are
 Codex/gpt-5.6-luna or, when Claude is selected, haiku. No API provider fallback.
 
+The UI submits exactly one paragraph per explicit click (`texts:[paragraph]`).
+Optional boolean `refresh:true` is supported only for a single paragraph and
+bypasses completed in-memory, aggregate and paragraph disk caches. A running
+request for that same paragraph is coalesced. After success the new result replaces
+its saved paragraph. Cached paragraphs return immediately without acquiring the
+generation semaphore or waiting behind four unfinished tasks. Bulk requests remain
+compatible for existing API clients; the UI no longer generates entire chapters.
+
 At most four unfinished jobs and two active workers. Numeric validation accepts
 English small cardinal/ordinal words rendered as numerals and normal thousands
 separators, but rejects missing original values, invented values or changed percent
@@ -87,11 +95,14 @@ pronouns. The checks apply before paragraph/disk caching. They do not prove comp
 semantic correctness. Cache identity includes provider/model/glossary/contract;
 legacy machine drafts cannot satisfy a precise-translation cache key.
 
-Browser caches are per paper and server revision, keyed by prose content rather
+Browser caches are per paper and server revision, keyed by paragraph content rather
 than image HTML. In-flight views are coalesced; late results cache under their own
 key and cannot paint another chapter/engine. Reload can reuse the private browser
-cache. After first opting into Chinese reading, a stable subsequent chapter can
-prepare on demand in the background. `window.paperHubTranslationSnapshot()` returns
+cache (up to 250 saved paragraphs). Engine selection persists per paper/browser.
+Loading, switching chapters, changing reading view or engine never runs a model.
+Source edits invalidate the affected paragraph; old replies remain bound to their
+source and engine. Waiting time is shown for each clicked paragraph.
+`window.paperHubTranslationSnapshot()` returns
 only current rendered `{path,texts}` for read-only checks/preparation; figure anchor
 IDs and hidden source metadata are excluded. It grants no source-save capability.
 For pending inline revisions, text extraction excludes deleted spans and review

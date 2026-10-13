@@ -12,7 +12,7 @@ async page=>{
   blockedWrites++;return route.abort();
  });
  try{
-  const chinese=page.getByRole('button',{name:'翻译成中文',exact:true});
+  const chinese=page.getByRole('button',{name:'中文阅读',exact:true});
   check(await page.locator('.topbar .hub-reading-toolbar').count()===1,'translation controls are in the persistent header');
   for(const width of [320,390,768,1440]){
    await page.setViewportSize({width,height:844});
@@ -31,7 +31,10 @@ async page=>{
    check(await chinese.isVisible(),'translation stays visible in structure view');
   }
   const began=Date.now();await chinese.click();
-  await page.waitForFunction(()=>document.querySelector('.hub-translation-status').textContent.includes('中文辅助阅读'),{},{timeout:180000});
+  const index=await page.evaluate(()=>window.paperHubTranslationSnapshot().texts.findIndex(t=>t.length>200));
+  const panel=page.locator('#hub-translation-view .hub-paragraph-tools').nth(index);
+  if(!await panel.locator('.hub-paragraph-value').isVisible())await panel.locator('.hub-paragraph-translate').click();
+  await page.waitForFunction(index=>document.querySelectorAll('#hub-translation-view .hub-paragraph-value')[index]?.textContent.length>0,index,{timeout:180000});
   check(await page.locator('#hub-translation-view').isVisible(),'click opens translated reading view');
   check(await page.locator('#structure-workspace').isHidden(),'translation leaves structure view');
   check(/[\u4e00-\u9fff]/.test(await page.locator('#hub-translation-view').innerText()),'actual machine translation contains Chinese');

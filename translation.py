@@ -170,6 +170,9 @@ class TranslationJobs:
                 not isinstance(t, str) or not t.strip() or len(t) > 16000 for t in texts) or sum(map(len, texts)) > 120000:
             return web.json_response({'error': '请按章节翻译，每次最多 80 段、12 万字。'}, status=400)
         engine = body.get('engine', 'offline')
+        refresh=body.get('refresh',False)
+        if not isinstance(refresh,bool) or (refresh and len(texts)!=1):
+            return web.json_response({'error':'重新翻译仅支持单段，请使用布尔值refresh。'},status=400)
         if engine not in ('ai', 'offline'):
             return web.json_response({'error': '请选择 AI 精译或离线速译。'}, status=400)
         if engine == 'offline' and not self.python.exists():
@@ -186,11 +189,25 @@ class TranslationJobs:
             return web.json_response({'error':'翻译配置已更新，请刷新页面后重试。'},status=409)
         digest = cache_digest(engine_id, glossary, texts)
         key = (slug, digest)
+        existing=self.jobs.get(key)
+        if refresh and existing and existing['status'] in ('queued','running'):
+            return web.json_response(existing,status=202)
+        if refresh:
+            if sum(j['status'] in ('queued','running') for j in self.jobs.values())>=4:
+                return web.json_response({'error':'翻译任务较多，请稍后再试。'},status=429)
+            # Legacy chapter aggregates must not keep a pre-refresh paragraph.
+            for old_key,old_job in list(self.jobs.items()):
+                if old_key[0]==slug and old_job['status']=='done':self.jobs.pop(old_key)
+            directory=Path(paper['repo'])/'.paper-pal/translations'
+            for aggregate in directory.glob('[0-9a-f]*.json'):
+                try:
+                    if json.loads(aggregate.read_text()).get('engine')==engine_id:aggregate.unlink()
+                except (OSError,ValueError):continue
         if self.jobs.get(key, {}).get('status') == 'error':
             del self.jobs[key]
         cached = Path(paper['repo']) / '.paper-pal/translations' / (digest + '.json')
         if key not in self.jobs:
-            if cached.exists():
+            if cached.exists() and not refresh:
                 try:
                     data = json.loads(cached.read_text())
                     if data.get('engine') != engine_id or not isinstance(data.get('translations'),list) or len(data['translations']) != len(texts) or any(not isinstance(t,str) or not t.strip() for t in data['translations']):
@@ -200,14 +217,15 @@ class TranslationJobs:
                 except (OSError, ValueError, KeyError, TypeError):
                     cached.unlink(missing_ok=True)
             if key not in self.jobs:
-                if sum(j['status'] in ('queued', 'running') for j in self.jobs.values()) >= 4:
-                    return web.json_response({'error': '翻译任务较多，请稍后再试。'}, status=429)
                 translated=[]
                 for text in texts:
                     # Unresolved LaTeX include identifiers have no linguistic
                     # content. Keep them intact, including leading zeroes.
                     if re.fullmatch(r'(?:table|fig|eq|sec|app)_[A-Za-z0-9_]+',text):
                         translated.append(text)
+                        continue
+                    if refresh:
+                        translated.append(None)
                         continue
                     segment=cached.parent/('p-'+cache_digest(engine_id,glossary,text)+'.json')
                     try:
@@ -217,10 +235,15 @@ class TranslationJobs:
                         validate_translation(text,target,glossary,strict=engine=='ai')
                         translated.append(target)
                     except (OSError,ValueError,KeyError,TypeError): translated.append(None)
-                self.jobs[key] = {'id': digest, 'status': 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated), 'model': model, 'provider':provider,'revision':revision}
-                task = asyncio.create_task(self.run(key, texts, cached, glossary, engine_id))
-                self.tasks.add(task)
-                task.add_done_callback(self.tasks.discard)
+                ready=all(t is not None for t in translated)
+                if not ready and sum(j['status'] in ('queued', 'running') for j in self.jobs.values())>=4:
+                    return web.json_response({'error':'翻译任务较多，请稍后再试。'},status=429)
+                self.jobs[key] = {'id': digest, 'status': 'done' if ready else 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated), 'model': model, 'provider':provider,'revision':revision}
+                if ready:save_cache(cached,{'engine':engine_id,'translations':translated})
+                else:
+                    task = asyncio.create_task(self.run(key, texts, cached, glossary, engine_id))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
         return web.json_response(self.jobs[key], status=202)
 
     async def status(self, request):

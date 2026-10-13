@@ -100,8 +100,9 @@ bash scripts/install-translation.sh
 
 This installs Argos Translate and verifies the model hash from the lock file.
 It downloads a model separately; no model is bundled. The UI defaults to
-**论文精译** through the current official Codex/Claude subscription; optional
-Argos is labelled **快速草译**. Set `translation.aiProvider` (`codex` or `claude`)
+**精翻** through the current official Codex/Claude subscription; optional
+Argos is labelled **机翻**. The selection is remembered per paper/browser and
+can be changed without starting translation. Set `translation.aiProvider` (`codex` or `claude`)
 and `translation.aiModel` in the paper configuration. Gateway environment
 `PAPER_HUB_TRANSLATION_PROVIDER` / `PAPER_HUB_TRANSLATION_MODEL` are fallbacks;
 default models are `gpt-5.6-luna` for Codex and `haiku` for Claude. No API-key
@@ -113,10 +114,14 @@ labels before caching; English number words may become equivalent numerals.
 These checks do not replace semantic review. Model/provider, glossary and contract
 revision isolate caches. Memory and private per-paper browser caches make repeat
 switches and reloads fast; server caches retain checked paragraphs across edits.
-Image-only changes refresh visuals without retranslating prose. After a user first
-enables Chinese reading, stable later chapters can prepare in the background;
-workers are on demand, with two active tasks and no resident GPU translation model.
-First-time new prose still requires generation and shows real progress. Translation
+Image-only changes refresh visuals without retranslating prose. Every paragraph
+and heading has **翻译本段**; **重新翻译** explicitly bypasses its old cached
+translation. Editing English invalidates that paragraph's displayed result.
+Page loads, chapter/view switches and engine changes never start translation.
+There is no background chapter generation. Only clicked paragraphs are submitted,
+with up to two active tasks and no resident GPU translation model.
+First-time or refreshed prose still requires generation and shows elapsed wait.
+Showing a saved paragraph and generating a new one are different timings. Translation
 never edits manuscript source. Pure translation uses an isolated prompt/tool policy;
 the separate paper AI workspace continues to use its live global/project guidance.
 Pending revisions are translated as a labelled preview, excluding deleted text and
@@ -250,6 +255,7 @@ to that same Page using an in-memory target token. The CLI current tab must not
 be assumed to follow a newly created Page. Missing or duplicate targets fail closed.
 
 Reading controls stay in the persistent paper header: **英文原文**,
-**翻译成中文**, and **中英对照**. An explicit language click returns from the
+**中文阅读**, and **中英对照**. An explicit language click returns from the
 structure/PDF/mobile drawer to reading; background translation refreshes preserve
-an open AI drawer. Translation remains a separate read-only view of the chapter.
+an open AI drawer. Each view offers paragraph buttons. Translated text is read-only
+and source-adjacent controls remain outside editable source blocks.

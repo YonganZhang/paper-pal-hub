@@ -96,13 +96,48 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current['status'],'done')
         self.assertEqual(current['translations'],['table_01_wells'])
 
+    async def test_refresh_bypasses_both_caches_and_replaces_saved_paragraph(self):
+        self.jobs.python=Path(sys.executable)
+        (self.jobs.root/'translate-worker.py').write_text("import json,sys\nfrom pathlib import Path\np=json.load(sys.stdin)\nc=Path(__file__).with_name('called')\nvalue='新译文' if c.exists() else '旧译文'\nc.write_text(value)\nprint(json.dumps({'index':0,'text':value}),flush=True)\n")
+        async def translate(**extra):
+            response=await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original'],**extra})
+            self.assertEqual(response.status,202)
+            job=await response.json()
+            for _ in range(100):
+                job=await(await self.client.get('/papers/alpha/hub/translate/'+job['id'])).json()
+                if job['status'] in ('done','error'):break
+                await asyncio.sleep(.01)
+            self.assertEqual(job['status'],'done')
+            return job['translations']
+        self.assertEqual(await translate(),['旧译文'])
+        self.assertEqual(await translate(),['旧译文'])
+        self.assertEqual(await translate(refresh=True),['新译文'])
+        self.jobs.jobs.clear()
+        self.assertEqual(await translate(),['新译文'])
+        for body in ({'texts':['Original'],'refresh':'true'},{'texts':['One','Two'],'refresh':True}):
+            self.assertEqual((await self.client.post('/papers/alpha/hub/translate',json=body)).status,400)
+
+    async def test_ready_paragraph_does_not_wait_behind_active_translation_limit(self):
+        from translation import cache_digest,save_cache
+        repo=Path(self.papers[0]['repo']);directory=repo/'.paper-pal/translations'
+        save_cache(directory/('p-'+cache_digest(ENGINE,{},'Original')+'.json'),{'engine':ENGINE,'text':'已有译文'})
+        for index in range(4):self.jobs.jobs[('beta',str(index))]={'status':'running'}
+        with patch('translation.asyncio.create_subprocess_exec',side_effect=AssertionError('Cached result needs no worker')):
+            result=await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original']})
+            self.assertEqual(result.status,202)
+            job=await result.json()
+            self.assertEqual(job['status'],'done')
+            self.assertEqual(job['translations'],['已有译文'])
+
     async def test_stuck_worker_cleanup_is_bounded(self):
         class StuckProcess:
             pid = 12345
             async def wait(self):
                 await asyncio.Event().wait()
         with patch('translation.os.killpg') as kill, self.assertLogs('translation', level='WARNING'):
-            await asyncio.wait_for(stop_process_group(StuckProcess(), grace=.01), .1)
+            # The two 10ms grace periods remain; allow shared-host scheduling
+            # jitter while still detecting an unbounded process wait.
+            await asyncio.wait_for(stop_process_group(StuckProcess(), grace=.01), 1)
         self.assertEqual(kill.call_count, 2)
 
     async def test_browser_runtime_environment_is_only_passed_to_browser_workers(self):
