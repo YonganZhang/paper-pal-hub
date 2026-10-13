@@ -21,7 +21,7 @@ REQUIRED = (
     'templates/README.md', 'templates/paper-ai.SKILL.md.template',
     'docs/README.md', 'docs/api-contract.md', 'docs/publication.md', 'docs/public-readme.md',
     'tests/test_hub.py', 'tests/test_translation.py', 'tests/test_public_export.py',
-    'tests/backend_contract.test.mjs', 'tests/subscription_contract.test.mjs', 'tests/consultation_contract.test.mjs',
+    'tests/backend_contract.test.mjs', 'tests/reading_contract.test.mjs', 'tests/subscription_contract.test.mjs', 'tests/consultation_contract.test.mjs',
     'tests/browser_ai_send.js', 'tests/browser_ai_selection.js',
     'tests/browser_draft_ack.js', 'tests/browser_reading_artifacts.js',
     'web/index.html', 'web/login.html', 'web/login.css', 'web/icon.svg',
@@ -35,7 +35,7 @@ REQUIRED = (
     'tests/test_versions.py', 'tests/test_figures.py',
     'tests/figure_task_contract.test.mjs', 'tests/browser_versions.js',
     'tests/browser_figure_studio.js', 'tests/browser_text_input.js', 'tests/browser_figure_inline.js', 'tests/browser_consultation_fill.js', 'tests/browser_translation_visible.js', 'tests/browser_translation_races.js', 'tests/browser_translation_quality.js',
-    'tests/browser_retry_identity.js', 'tests/browser_paragraph_translation.js', 'tests/browser_paragraph_live.js', 'tests/test_portability.py',
+    'tests/browser_retry_identity.js', 'tests/browser_paragraph_translation.js', 'tests/browser_paragraph_live.js', 'tests/browser_reading_source.js', 'tests/test_portability.py',
     'tests/runtime_paths.test.mjs',
 )
 OPTIONAL = ('docs/local-cli.md',)

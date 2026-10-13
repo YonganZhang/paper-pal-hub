@@ -259,3 +259,9 @@ Reading controls stay in the persistent paper header: **英文原文**,
 structure/PDF/mobile drawer to reading; background translation refreshes preserve
 an open AI drawer. Each view offers paragraph buttons. Translated text is read-only
 and source-adjacent controls remain outside editable source blocks.
+
+Running-title/author metadata is excluded before macro expansion and never sent
+as paper prose. The real manuscript title has its own paragraph translation control.
+Keyword separators use punctuation; include wrappers render bounded source tables
+or provide compiled-PDF access. Make-based projects still load main-file macros
+into separate sections. Source offsets, equations and review anchors are preserved.

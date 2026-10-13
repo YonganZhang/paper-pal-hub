@@ -110,3 +110,19 @@ numbers and includes proposed additions, so old/new sentences are never joined.
 Those blocks are labelled as a pending Chinese preview; reading them does not
 accept a proposal. Standalone unresolved LaTeX include identifiers are preserved
 verbatim without a model call.
+
+## Reading semantics and LaTeX metadata
+
+The backend classifies running-title/author/header commands before macro expansion;
+their raw source and block offsets remain available, but they are hidden in reading.
+Project macros use the configured default manuscript when a make-based build has no
+readable `.tex` entry in its working directory. Include commands inside macro
+definitions are not document-traversal boundaries. Standalone single-argument
+include wrappers use the existing source-root artifact resolver; readable tables
+render as tables, otherwise named tables get a compiled-PDF fallback without
+showing an internal filename. No extra read/write roots are granted.
+
+The real front-matter title is a read-only translatable heading. Keyword separators
+render as punctuation. Hidden blocks never enter translation collection, and
+typesetter assignments are rejected before legacy cache lookup (400). Mathematical
+commands and author content are preserved; this is not blanket backslash removal.

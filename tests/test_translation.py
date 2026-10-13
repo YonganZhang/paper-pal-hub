@@ -129,6 +129,22 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job['status'],'done')
             self.assertEqual(job['translations'],['已有译文'])
 
+    async def test_typesetter_assignments_cannot_reuse_legacy_cache_but_math_is_allowed(self):
+        from translation import cache_digest,save_cache
+        raw=r'\cs_gset:Nn __short_title: BondFusion-TCN'
+        directory=Path(self.papers[0]['repo'])/'.paper-pal/translations'
+        save_cache(directory/(cache_digest(ENGINE,{},[raw])+'.json'),{'engine':ENGINE,'translations':[raw+' 中文']})
+        async def fake_run(key,*args):self.jobs.jobs[key].update(status='done',translations=['数学表达式'],completed=1)
+        with patch.object(self.jobs,'run',side_effect=fake_run) as run:
+            for text in [raw,r'\newcommand{\name}{Not prose}',r'\let\name\other']:
+                response=await self.client.post('/papers/alpha/hub/translate',json={'texts':[text]})
+                self.assertEqual(response.status,400)
+            self.assertEqual(run.call_count,0)
+            response=await self.client.post('/papers/alpha/hub/translate',json={'texts':[r'\operatorname{slog}(x) and \frac{a}{b} describe the formula.']})
+            self.assertEqual(response.status,202)
+            await asyncio.sleep(.01)
+            self.assertEqual(run.call_count,1)
+
     async def test_stuck_worker_cleanup_is_bounded(self):
         class StuckProcess:
             pid = 12345

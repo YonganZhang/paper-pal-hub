@@ -12,6 +12,50 @@ export function adaptServer(source) {
     if (source.split(from).length !== 2) throw new Error('Paper AI backend anchor changed: ' + from.slice(0, 80));
     source = source.replace(from, to);
   };
+  // Class metadata must be classified before expansion: cas-dc shorttitle
+  // otherwise expands into expl3 assignments and is mistaken for prose.
+  replaceOnce('const MAX_MACRO_EXPANSIONS = 1500;',String.raw`
+defineTextCommands("shorttitle shortauthors shortauthor runningtitle runningauthor runninghead markright fancyhead fancyfoot", { sig: "om" });
+defineTextCommands("sep", { text: " · " });
+const MAX_MACRO_EXPANSIONS = 1500;`);
+  replaceOnce('  await visit(path.resolve(compileRoot, mainArgument), 0);',String.raw`
+  const entry=path.resolve(compileRoot,mainArgument);
+  if(existsSync(entry)&&insideSourceRoot(entry))await visit(entry,0);
+  else await visit(resolveDocument(config.defaultDocument),0);`);
+  // An input inside a macro definition is not a document include. Splitting
+  // there truncated definitions, so section files lost their main-file macros.
+  replaceOnce('function collectMacros(source) {','function collectMacros(source, definitionRanges = null) {');
+  replaceOnce('    const value = body.value.trim();','    if(definitionRanges)definitionRanges.push([match.index,body.end]);\n    const value = body.value.trim();');
+  replaceOnce('    const events = includeCommands(masked).map((item) => ({ index: item.index, targets: [path.extname(item.target) ? item.target : `${item.target}.tex`] }));',String.raw`
+    const definitionRanges=[];collectMacros(source,definitionRanges);
+    const isDefinition=index=>definitionRanges.some(([start,end])=>index>=start&&index<end);
+    const events = includeCommands(masked).filter(item=>!isDefinition(item.index)).map((item) => ({ index: item.index, targets: [path.extname(item.target) ? item.target : `+'`${item.target}.tex`'+String.raw`] }));`);
+  replaceOnce('      const extension = /documentclass/.test(match[0]) ? ".cls" : ".sty";',
+    '      if(isDefinition(match.index))continue;\n      const extension = /documentclass/.test(match[0]) ? ".cls" : ".sty";');
+  // Follow only standalone, one-argument include wrappers through the existing
+  // source-root resolver. Never broaden the readable/editable source boundary.
+  source=String.raw`
+async function paperHubIncludedMacroArtifact(block,relativePath,macros,references) {
+  if(block.kind!=="paragraph")return null;
+  const call=/^\s*\\([A-Za-z@]+)\s*\{([^{}\r\n]+)\}\s*$/.exec(maskLatex(block.raw));
+  if(!call)return null;
+  const macro=macros.get(call[1]);
+  if(macro?.params!==1)return null;
+  const include=/\\(?:input|include)\s*\{([^{}]+)\}/.exec(macro.body||"");
+  if(!include)return null;
+  const target=include[1].replace(/#1/g,call[2]);
+  if(/#[1-9]/.test(target))return null;
+  const artifact=await resolveIncludedArtifact(relativePath,target,macros,references,{onlyArtifacts:true});
+  if(artifact)return artifact;
+  if(/(?:^|[/\\])(?:table|tabs?)[_/-]/i.test(target))
+    return {artifactType:"table",fallback:true,caption:"See the table in the compiled PDF.",label:null,page:null};
+  return null;
+}
+`+source;
+  replaceOnce('    const rawSemantic = await semanticBlock(block, relativePath, macros, references);',
+    '    const includedMacro = await paperHubIncludedMacroArtifact(block, relativePath, macros, references);\n'+
+    '    if(includedMacro)block={...block,kind:includedMacro.artifactType};\n'+
+    '    const rawSemantic = includedMacro || await semanticBlock(block, relativePath, macros, references);');
   replaceOnce('  return normalizeProvider(requested, defaultProvider);',
     '  const provider = normalizeProvider(requested, defaultProvider);\n  if (!["codex", "claude"].includes(provider)) throw new HttpError(400, "论文 AI 仅支持 Codex / Claude 订阅登录。");\n  return provider;');
   replaceOnce('    model = providerModel(provider, config, { chat: true });',

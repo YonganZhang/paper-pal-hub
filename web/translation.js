@@ -26,7 +26,7 @@
   }
   config().catch(error=>{status.textContent=error.message;configuration=null;});
   function collect(){
-    return [...editor.querySelectorAll(':scope > .editor-block')].map(el=>{
+    return [...editor.querySelectorAll(':scope > .paper-front > .paper-title,:scope > .editor-block')].filter(el=>!el.hidden&&!el.reviewBlock?.hidden).map(el=>{
       const copy=el.cloneNode(true);
       copy.querySelectorAll('button,.review-link-badge,.review-number,.proposal-diff,.proposal-delete,[hidden]').forEach(n=>n.remove());
       copy.querySelectorAll('figcaption > code').forEach(n=>{if(/^(?:fig|tab|eq|sec|app):[\w:.-]+$/.test(n.textContent.trim()))n.remove();});
@@ -41,7 +41,7 @@
         node.remove();
       }
       copy.querySelectorAll('.katex').forEach(n=>n.replaceWith(n.querySelector('annotation')?.textContent||'［公式见原文］'));
-      return {element:el,tag:el.classList.contains('kind-heading')?'H3':'P',text:copy.textContent.trim()||(visual.length?'［图表或公式］':''),visual:visual.join(''),proposal:el.classList.contains('has-proposal')};
+      return {element:el,tag:el.matches('.kind-heading,.paper-title')?'H3':'P',text:copy.textContent.trim()||(visual.length?'［图表或公式］':''),visual:visual.join(''),proposal:el.classList.contains('has-proposal')};
     }).filter(b=>b.text);
   }
   window.paperHubTranslationSnapshot=()=>({path,texts:collect().map(b=>b.text)});
@@ -182,7 +182,7 @@
   new MutationObserver(changes=>{
     if(changes.some(change=>{
       const target=change.target.nodeType===1?change.target:change.target.parentElement;
-      return target?.closest('.editor-block')||[...change.addedNodes,...change.removedNodes].some(node=>node.nodeType===1&&node.matches('.editor-block'));
+      return target?.closest('.editor-block,.paper-title')||[...change.addedNodes,...change.removedNodes].some(node=>node.nodeType===1&&node.matches('.editor-block,.paper-front'));
     }))schedule();
   }).observe(editor,{subtree:true,childList:true,characterData:true});
   editor.addEventListener('input',event=>{if(event.target.closest('.editor-block'))sync();});

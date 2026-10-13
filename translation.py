@@ -169,6 +169,10 @@ class TranslationJobs:
         if not isinstance(texts, list) or not 1 <= len(texts) <= 80 or any(
                 not isinstance(t, str) or not t.strip() or len(t) > 16000 for t in texts) or sum(map(len, texts)) > 120000:
             return web.json_response({'error': '请按章节翻译，每次最多 80 段、12 万字。'}, status=400)
+        # Reject typesetter assignments before consulting any legacy cache.
+        # Mathematical commands (frac, operatorname, etc.) are valid content.
+        if any(re.match(r'^\s*\\(?:cs_[A-Za-z_]+:[A-Za-z]+|(?:newcommand|renewcommand|providecommand|[egx]?def|let|ExplSyntaxOn|ExplSyntaxOff)(?![A-Za-z]))',text) for text in texts):
+            return web.json_response({'error':'检测到LaTeX排版配置，不属于论文正文，请刷新阅读页面。'},status=400)
         engine = body.get('engine', 'offline')
         refresh=body.get('refresh',False)
         if not isinstance(refresh,bool) or (refresh and len(texts)!=1):
