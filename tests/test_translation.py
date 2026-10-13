@@ -11,7 +11,7 @@ from unittest.mock import patch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from translation import TranslationJobs, project_glossary, project_ai_model, worker_environment, stop_process_group, ENGINE
+from translation import TranslationJobs, project_glossary, project_ai_model, worker_environment, stop_process_group, ENGINE, validate_translation, translation_revision, project_ai_provider
 
 
 class TranslationTests(unittest.IsolatedAsyncioTestCase):
@@ -36,9 +36,9 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             result=await self.client.post('/papers/alpha/hub/translate',json=value)
             self.assertEqual(result.status,400)
         async def fake_run(key,texts,cached,glossary,engine_id):
-            self.jobs.jobs[key].update(status='done',translations=['中文'],completed=1)
+            self.jobs.jobs[key].update(status='done',translations=['中文 96.1%'],completed=1)
             cached.parent.mkdir(parents=True)
-            cached.write_text(json.dumps({'engine':engine_id,'translations':['中文']}))
+            cached.write_text(json.dumps({'engine':engine_id,'translations':['中文 96.1%']}))
         with patch.object(self.jobs,'run',side_effect=fake_run):
             result=await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original 96.1%']})
             data=await result.json()
@@ -49,7 +49,7 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         self.jobs.jobs.clear()
         cached=await (await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original 96.1%']})).json()
         self.assertEqual(cached['status'],'done')
-        self.assertEqual(cached['translations'],['中文'])
+        self.assertEqual(cached['translations'],['中文 96.1%'])
 
     async def test_glossary_is_inside_workspace_and_changes_cache(self):
         repo=Path(self.papers[0]['repo'])
@@ -59,6 +59,42 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         (repo/'.paper-pal.json').write_text(json.dumps({'translation':{'glossary':'../outside.json'}}))
         with self.assertRaises(ValueError):
             project_glossary(self.papers[0])
+
+    async def test_configuration_revision_fences_model_changes(self):
+        repo=Path(self.papers[0]['repo']);config=repo/'.paper-pal.json'
+        config.write_text(json.dumps({'translation':{'aiProvider':'claude','aiModel':'haiku'}}))
+        first=await(await self.client.get('/papers/alpha/hub/translation-config')).json()
+        self.assertEqual(first['default_engine'],'ai')
+        self.assertEqual(project_ai_provider(self.papers[0]),'claude')
+        config.write_text(json.dumps({'translation':{'aiProvider':'codex','aiModel':'model-b'}}))
+        second=await(await self.client.get('/papers/alpha/hub/translation-config')).json()
+        self.assertNotEqual(first['revisions']['ai'],second['revisions']['ai'])
+        response=await self.client.post('/papers/alpha/hub/translate',json={'engine':'ai','texts':['Original'],'revision':first['revisions']['ai']})
+        self.assertEqual(response.status,409)
+        config.write_text(json.dumps({'translation':{'aiProvider':'api'}}))
+        with self.assertRaises(ValueError):project_ai_provider(self.papers[0])
+
+    async def test_wrong_numeric_translation_is_not_cached_as_done(self):
+        self.jobs.python=Path(sys.executable)
+        (self.jobs.root/'translate-worker.py').write_text("import json,sys\np=json.load(sys.stdin)\nprint(json.dumps({'index':0,'text':'准确率99%'}),flush=True)\n")
+        job=await(await self.client.post('/papers/alpha/hub/translate',json={'texts':['Accuracy 96.1%']})).json()
+        for _ in range(100):
+            current=await(await self.client.get('/papers/alpha/hub/translate/'+job['id'])).json()
+            if current['status']=='error':break
+            await asyncio.sleep(.01)
+        self.assertEqual(current['status'],'error')
+        self.assertEqual(current['completed'],0)
+        self.assertEqual(list((Path(self.papers[0]['repo'])/'.paper-pal/translations').glob('*.json')),[])
+
+    async def test_unresolved_table_identifier_is_preserved_without_model(self):
+        with patch('translation.asyncio.create_subprocess_exec',side_effect=AssertionError('No translation needed')):
+            job=await(await self.client.post('/papers/alpha/hub/translate',json={'engine':'ai','texts':['table_01_wells']})).json()
+            for _ in range(100):
+                current=await(await self.client.get('/papers/alpha/hub/translate/'+job['id'])).json()
+                if current['status'] in ('done','error'):break
+                await asyncio.sleep(.01)
+        self.assertEqual(current['status'],'done')
+        self.assertEqual(current['translations'],['table_01_wells'])
 
     async def test_stuck_worker_cleanup_is_bounded(self):
         class StuckProcess:
@@ -74,7 +110,9 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
                 'CHATGPT_WEB_WRITE_LOCK':'/shared/consult/lock','CHATGPT_WEB_CDP':'http://127.0.0.1:19223','ANTHROPIC_API_KEY':'unused'}
         plain=worker_environment(source,self.jobs.root)
         browser=worker_environment(source,self.jobs.root,browser=True)
-        for key in ('XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS','CHATGPT_WEB_WRITE_LOCK','CHATGPT_WEB_CDP'):
+        for key in ('XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS'):
+            self.assertEqual(plain[key],source[key])
+        for key in ('CHATGPT_WEB_WRITE_LOCK','CHATGPT_WEB_CDP'):
             self.assertNotIn(key,plain)
             self.assertEqual(browser[key],source[key])
         self.assertNotIn('ANTHROPIC_API_KEY',browser)
@@ -170,6 +208,20 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(Path(str(worker)+'.input').read_text()),['Changed'])
         for cache in (Path(self.papers[0]['repo'])/'.paper-pal/translations').glob('*.json'):
             self.assertEqual(cache.stat().st_mode & 0o777,0o600)
+
+
+class TranslationQualityTests(unittest.TestCase):
+    def test_numeric_percentage_and_protected_class_integrity(self):
+        glossary={'Good':{'target':'Good','variants':[]}}
+        validate_translation('Recall for Good is 0.65, not 0.91.','Good的召回率为0.65，而不是0.91。',glossary,strict=True)
+        for result in ['Good的召回率为0.91。','Good的召回率为65%，而不是91%。','良好的召回率为0.65，而不是0.91。']:
+            with self.subTest(result=result),self.assertRaises(ValueError):validate_translation('Recall for Good is 0.65, not 0.91.',result,glossary,strict=True)
+        validate_translation('Four models (1, 2, 3, 4) have weights whose mean is one.','4个模型（1、2、3、4）的权重均值为1。',{},strict=True)
+        validate_translation('Samples 1, 2 have a total of 1,900.','样本1、2合计1900。',{})
+        with self.assertRaises(ValueError):validate_translation('Two percentage points.','2%。',{})
+        validate_translation('Good is compared with Good in this check.','本检查将Good类与该类比较。',glossary,strict=True)
+        validate_translation('The rare good-bond class.','罕见的Good胶结类别。',glossary,strict=True)
+        self.assertNotEqual(translation_revision('ai',{},'a'),translation_revision('ai',{},'b'))
 
 
 if __name__=='__main__':

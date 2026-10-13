@@ -67,3 +67,35 @@ the worker must verify identity again before using them.
 When a worker creates a Page through run-code, it binds the global send guard
 to that same Page using an in-memory target token. The CLI current tab must not
 be assumed to follow a newly created Page. Missing or duplicate targets fail closed.
+
+
+## Translation revision and reading cache
+
+GET `/papers/<slug>/hub/translation-config` returns `{default_engine:"ai",
+revisions:{ai:<hash>,offline:<hash>}}` with no-store. An existing translate POST may
+include `revision`; a stale value returns409 before starting a worker. The job
+freezes provider/model and publishes `revision`, along with checked paragraph
+progress. `translation.aiProvider` accepts only Codex/Claude subscriptions;
+`translation.aiModel` and gateway equivalents configure the model. Defaults are
+Codex/gpt-5.6-luna or, when Claude is selected, haiku. No API provider fallback.
+
+At most four unfinished jobs and two active workers. Numeric validation accepts
+English small cardinal/ordinal words rendered as numerals and normal thousands
+separators, but rejects missing original values, invented values or changed percent
+units. Protected labels must retain their identity; repeated labels may use natural
+pronouns. The checks apply before paragraph/disk caching. They do not prove complete
+semantic correctness. Cache identity includes provider/model/glossary/contract;
+legacy machine drafts cannot satisfy a precise-translation cache key.
+
+Browser caches are per paper and server revision, keyed by prose content rather
+than image HTML. In-flight views are coalesced; late results cache under their own
+key and cannot paint another chapter/engine. Reload can reuse the private browser
+cache. After first opting into Chinese reading, a stable subsequent chapter can
+prepare on demand in the background. `window.paperHubTranslationSnapshot()` returns
+only current rendered `{path,texts}` for read-only checks/preparation; figure anchor
+IDs and hidden source metadata are excluded. It grants no source-save capability.
+For pending inline revisions, text extraction excludes deleted spans and review
+numbers and includes proposed additions, so old/new sentences are never joined.
+Those blocks are labelled as a pending Chinese preview; reading them does not
+accept a proposal. Standalone unresolved LaTeX include identifiers are preserved
+verbatim without a model call.

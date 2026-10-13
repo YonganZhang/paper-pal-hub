@@ -12,12 +12,44 @@ from pathlib import Path
 from aiohttp import web
 
 ENGINE = 'argos-1.11.0-en-zh-1.9-int8-beam1-v3'
+AI_REVISION = 'v4-isolated-checked'
+
+
+def translation_revision(engine, glossary, model=None, provider='codex'):
+    return cache_digest(f'paper-pal-{provider}-{model}-low-{AI_REVISION}' if engine == 'ai' else ENGINE, glossary, [])
+
+
+def validate_translation(source, translated, glossary, *, strict=False):
+    from collections import Counter
+    # Keep decimals, percentages, signed values and citation years; punctuation
+    # surrounding numbers may change naturally between English and Chinese.
+    def numbers(text):
+        text=text.replace('−','-').replace('％','%').replace('\\%','%')
+        # Commas separate citations unless they form a thousands group.
+        tokens=re.findall(r'(?<![A-Za-z0-9])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?%?',text)
+        return Counter(token.replace(',','').lstrip('+') for token in tokens)
+    words=['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen','twenty']
+    aliases={word:str(index) for index,word in enumerate(words)}
+    aliases.update({word:str(index) for index,word in enumerate(['first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth'],1)})
+    spelled=Counter(aliases[word.lower()] for word in re.findall(r'\b(?:'+ '|'.join(aliases)+r')\b',source,re.I))
+    original=numbers(source);target=numbers(translated)
+    # English "four models (1...4)" may naturally become "4个模型（1...4）".
+    # Still reject missing original values, changed units and invented values.
+    if any(target[value]<count for value,count in original.items()) or any(count>original[value]+spelled[value] for value,count in target.items()):
+        raise ValueError('Translation changed numeric values')
+    if strict:
+        for term,rule in glossary.items():
+            if rule['variants']: continue
+            pattern=r'(?<![A-Za-z0-9])'+re.escape(term)+r'(?![A-Za-z0-9])'
+            if re.search(pattern,source) and not re.search(pattern,translated):
+                raise ValueError('Translation changed a protected label')
 
 
 def worker_environment(source, task_tmp, *, browser=False):
     """Keep runtime, locale, certificate and network settings; no unrelated keys."""
     keep = {'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'CODEX_HOME', 'CODEX_BIN',
-            'PAPER_PAL_DIR', 'PAPER_HUB_TRANSLATION_MODEL',
+            'PAPER_PAL_DIR', 'PAPER_HUB_TRANSLATION_MODEL', 'PAPER_HUB_TRANSLATION_PROVIDER', 'CLAUDE_BIN',
+            'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
             'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'SSL_CERT_FILE',
             'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE'}
     if browser:
@@ -84,11 +116,19 @@ def project_glossary(paper):
         return {}
 
 
+def project_ai_provider(paper):
+    config_path=Path(paper['repo'])/'.paper-pal.json'
+    config=json.loads(config_path.read_text()) if config_path.is_file() else {}
+    provider=config.get('translation',{}).get('aiProvider') or os.environ.get('PAPER_HUB_TRANSLATION_PROVIDER') or 'codex'
+    if provider not in ('codex','claude'):raise ValueError('Unsupported translation subscription provider')
+    return provider
+
+
 def project_ai_model(paper):
     """Freeze the requested translation model and use it in cache identity."""
     config_path = Path(paper['repo']) / '.paper-pal.json'
     config = json.loads(config_path.read_text()) if config_path.is_file() else {}
-    model = config.get('translation', {}).get('aiModel') or os.environ.get('PAPER_HUB_TRANSLATION_MODEL') or 'gpt-5.6-luna'
+    model = config.get('translation', {}).get('aiModel') or os.environ.get('PAPER_HUB_TRANSLATION_MODEL') or ('haiku' if project_ai_provider(paper)=='claude' else 'gpt-5.6-luna')
     if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}', model):
         raise ValueError('Invalid translation model')
     return model
@@ -100,7 +140,7 @@ class TranslationJobs:
         self.root = root
         self.jobs = {}
         self.tasks = set()
-        self.semaphore = asyncio.Semaphore(1)
+        self.semaphore = asyncio.Semaphore(2)
         self.python = Path.home() / 'envs/paper-hub-translation/bin/python'
 
     def paper(self, slug):
@@ -111,6 +151,15 @@ class TranslationJobs:
         if not paper:
             raise web.HTTPNotFound(text='论文未登记')
         return paper
+
+    async def configuration(self, request):
+        paper=self.paper(request.match_info['slug'])
+        try:
+            glossary=project_glossary(paper);model=project_ai_model(paper);provider=project_ai_provider(paper)
+            value={'default_engine':'ai','revisions':{engine:translation_revision(engine,glossary,model,provider) for engine in ('ai','offline')}}
+            return web.json_response(value,headers={'Cache-Control':'no-store, private'})
+        except (OSError,ValueError,KeyError,TypeError):
+            return web.json_response({'error':'论文翻译配置有误，请联系维护窗口。'},status=503)
 
     async def start(self, request):
         slug = request.match_info['slug']
@@ -128,9 +177,13 @@ class TranslationJobs:
         try:
             glossary = project_glossary(paper)
             model = project_ai_model(paper) if engine == 'ai' else None
+            provider=project_ai_provider(paper) if engine=='ai' else None
         except (OSError, ValueError, KeyError, TypeError):
             return web.json_response({'error': '论文翻译配置有误，请联系维护窗口。'}, status=503)
-        engine_id = f'paper-pal-codex-{model}-low-v2' if engine == 'ai' else ENGINE
+        engine_id = f'paper-pal-{provider}-{model}-low-{AI_REVISION}' if engine == 'ai' else ENGINE
+        revision=translation_revision(engine,glossary,model,provider)
+        if body.get('revision') not in (None,revision):
+            return web.json_response({'error':'翻译配置已更新，请刷新页面后重试。'},status=409)
         digest = cache_digest(engine_id, glossary, texts)
         key = (slug, digest)
         if self.jobs.get(key, {}).get('status') == 'error':
@@ -142,7 +195,8 @@ class TranslationJobs:
                     data = json.loads(cached.read_text())
                     if data.get('engine') != engine_id or not isinstance(data.get('translations'),list) or len(data['translations']) != len(texts) or any(not isinstance(t,str) or not t.strip() for t in data['translations']):
                         raise ValueError('Translation cache mismatch')
-                    self.jobs[key] = {'id': digest, 'status': 'done', 'translations': data['translations'], 'total': len(texts), 'completed': len(texts), 'model': model}
+                    for source,target in zip(texts,data['translations']):validate_translation(source,target,glossary,strict=engine=='ai')
+                    self.jobs[key] = {'id': digest, 'status': 'done', 'translations': data['translations'], 'total': len(texts), 'completed': len(texts), 'model': model, 'provider':provider,'revision':revision}
                 except (OSError, ValueError, KeyError, TypeError):
                     cached.unlink(missing_ok=True)
             if key not in self.jobs:
@@ -150,12 +204,20 @@ class TranslationJobs:
                     return web.json_response({'error': '翻译任务较多，请稍后再试。'}, status=429)
                 translated=[]
                 for text in texts:
+                    # Unresolved LaTeX include identifiers have no linguistic
+                    # content. Keep them intact, including leading zeroes.
+                    if re.fullmatch(r'(?:table|fig|eq|sec|app)_[A-Za-z0-9_]+',text):
+                        translated.append(text)
+                        continue
                     segment=cached.parent/('p-'+cache_digest(engine_id,glossary,text)+'.json')
                     try:
                         value=json.loads(segment.read_text())
-                        translated.append(value['text'] if value['engine']==engine_id and isinstance(value['text'],str) else None)
+                        target=value['text']
+                        if value['engine']!=engine_id or not isinstance(target,str) or not target.strip():raise ValueError('Invalid paragraph cache')
+                        validate_translation(text,target,glossary,strict=engine=='ai')
+                        translated.append(target)
                     except (OSError,ValueError,KeyError,TypeError): translated.append(None)
-                self.jobs[key] = {'id': digest, 'status': 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated), 'model': model}
+                self.jobs[key] = {'id': digest, 'status': 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated), 'model': model, 'provider':provider,'revision':revision}
                 task = asyncio.create_task(self.run(key, texts, cached, glossary, engine_id))
                 self.tasks.add(task)
                 task.add_done_callback(self.tasks.discard)
@@ -197,7 +259,7 @@ class TranslationJobs:
                 stderr=diagnostics, start_new_session=True,
                 env=worker_environment(os.environ, task_tmp))
             async def collect():
-                process.stdin.write(json.dumps({'texts': [texts[i] for i in missing], 'glossary': glossary, 'aiModel': job.get('model')}).encode())
+                process.stdin.write(json.dumps({'texts': [texts[i] for i in missing], 'glossary': glossary, 'aiModel': job.get('model'), 'aiProvider':job.get('provider')}).encode())
                 await process.stdin.drain()
                 process.stdin.close()
                 received=0
@@ -206,6 +268,7 @@ class TranslationJobs:
                     if result['index'] != received or received>=len(missing) or not isinstance(result['text'], str) or not result['text'].strip():
                         raise ValueError('Invalid translation result')
                     index=missing[received]
+                    validate_translation(texts[index],result['text'],glossary,strict=engine_id!=ENGINE)
                     job['translations'][index]=result['text']
                     save_cache(cached.parent/('p-'+cache_digest(engine_id,glossary,texts[index])+'.json'),{'engine':engine_id,'text':result['text']})
                     received+=1
@@ -219,7 +282,8 @@ class TranslationJobs:
         except asyncio.CancelledError:
             terminal = {'status':'error', 'error':'服务已重启，请重新点击翻译。'}
             raise
-        except (OSError, ValueError, KeyError, asyncio.TimeoutError):
+        except (OSError, ValueError, KeyError, asyncio.TimeoutError) as error:
+            logging.getLogger(__name__).warning('Translation task failed: %s',type(error).__name__+': '+str(error)[:180])
             terminal = {'status':'error', 'error':'本次翻译未完成，请重试。原文仍保留。'}
         finally:
             try:
@@ -251,6 +315,7 @@ class TranslationJobs:
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
     def install(self, app):
+        app.router.add_get('/papers/{slug}/hub/translation-config', self.configuration)
         app.router.add_post('/papers/{slug}/hub/translate', self.start)
         app.router.add_get('/papers/{slug}/hub/translate/{job}', self.status)
         app.on_cleanup.append(self.cleanup)

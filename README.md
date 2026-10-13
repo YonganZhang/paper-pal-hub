@@ -99,14 +99,28 @@ bash scripts/install-translation.sh
 ```
 
 This installs Argos Translate and verifies the model hash from the lock file.
-It downloads a model separately; no model is bundled. AI translation is a separate
-subscription-backed option and requires its configured model to be available.
-Set `translation.aiModel` in a paper's `.paper-pal.json`, or set
-`PAPER_HUB_TRANSLATION_MODEL` in the gateway environment, to select an available
-Codex translation model. The project setting wins; the compatibility default is
-`gpt-5.6-luna`. Each job freezes its model, which is included in its cache key.
-Changing a model does not silently reuse another model's translations. Ordinary
-CPU translation and its caches remain independent of this setting.
+It downloads a model separately; no model is bundled. The UI defaults to
+**论文精译** through the current official Codex/Claude subscription; optional
+Argos is labelled **快速草译**. Set `translation.aiProvider` (`codex` or `claude`)
+and `translation.aiModel` in the paper configuration. Gateway environment
+`PAPER_HUB_TRANSLATION_PROVIDER` / `PAPER_HUB_TRANSLATION_MODEL` are fallbacks;
+default models are `gpt-5.6-luna` for Codex and `haiku` for Claude. No API-key
+fallback is used. Make service `CLAUDE_BIN`/PATH resolve to the same official
+client used in the terminal; an older second installation can behave differently.
+
+Translations are checked for original numeric values/units and protected class
+labels before caching; English number words may become equivalent numerals.
+These checks do not replace semantic review. Model/provider, glossary and contract
+revision isolate caches. Memory and private per-paper browser caches make repeat
+switches and reloads fast; server caches retain checked paragraphs across edits.
+Image-only changes refresh visuals without retranslating prose. After a user first
+enables Chinese reading, stable later chapters can prepare in the background;
+workers are on demand, with two active tasks and no resident GPU translation model.
+First-time new prose still requires generation and shows real progress. Translation
+never edits manuscript source. Pure translation uses an isolated prompt/tool policy;
+the separate paper AI workspace continues to use its live global/project guidance.
+Pending revisions are translated as a labelled preview, excluding deleted text and
+comment numbers. Translation does not accept those changes.
 
 ## Model adapters and skills
 

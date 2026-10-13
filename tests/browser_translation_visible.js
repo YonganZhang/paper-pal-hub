@@ -1,13 +1,14 @@
-// Authenticated production reading test: real CPU translation only; source writes blocked.
+// Authenticated production reading test: real translation; source writes blocked.
 async page=>{
  const checks=[];const check=(ok,name)=>{checks.push({name,passed:!!ok});if(!ok)throw new Error(name);};
  await page.locator('#editor .editor-block').first().waitFor({timeout:60000});
- const source=await page.locator('#editor').innerText();
+ await page.getByRole('button',{name:'英文原文',exact:true}).click();
+ const source=await page.evaluate(()=>JSON.stringify(window.paperHubTranslationSnapshot().texts));
  let translations=0,blockedWrites=0;
  await page.route('**/papers/*/**',route=>{
   const request=route.request();
   if(['GET','HEAD','OPTIONS'].includes(request.method()))return route.continue();
-  if(request.url().endsWith('/hub/translate')&&request.method()==='POST'&&request.postDataJSON().engine==='offline'){translations++;return route.continue();}
+  if(request.url().endsWith('/hub/translate')&&request.method()==='POST'&&['ai','offline'].includes(request.postDataJSON().engine)){translations++;return route.continue();}
   blockedWrites++;return route.abort();
  });
  try{
@@ -43,16 +44,16 @@ async page=>{
   await page.getByRole('button',{name:'英文原文',exact:true}).click();
   check(await page.evaluate(()=>!document.body.dataset.mobilePanel),'explicit language click returns from AI to reading');
   await page.getByRole('button',{name:'英文原文',exact:true}).click();
-  check(await page.locator('#editor').innerText()===source,'switching to English preserves source');
+  check(await page.evaluate(()=>JSON.stringify(window.paperHubTranslationSnapshot().texts))===source,'switching to English preserves source');
   await chinese.click();
   check(translations===firstRequests,'cached Chinese switch makes no new translation request');
   await page.getByRole('button',{name:'中英对照',exact:true}).click();
   check(await page.locator('.hub-translation-original').count()>0,'bilingual view displays original paragraphs');
   await page.getByRole('button',{name:'英文原文',exact:true}).click();
-  check(await page.locator('#editor').innerText()===source,'source is unchanged after all switches');
+  check(await page.evaluate(()=>JSON.stringify(window.paperHubTranslationSnapshot().texts))===source,'source is unchanged after all switches');
   check(blockedWrites===0,'no manuscript/model/archive writes attempted');
   await page.locator('.editor-pane').evaluate(pane=>pane.scrollTop=0);
   await page.screenshot({path:'_tests/_artifacts/translation-visible-mobile.png'});
-  return {checks,engine:'offline-cpu',translatedMs,translationRequests:translations,blockedWrites,sourceIntact:true};
+  return {checks,engine:'ai-subscription',translatedMs,translationRequests:translations,blockedWrites,sourceIntact:true};
  }finally{await page.unroute('**/papers/*/**');}
 }

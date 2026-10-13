@@ -32,8 +32,13 @@
       "providerAdapter": "Paper Pal agent-providers.mjs",
       "model": "gpt-5.6-luna",
       "reasoningEffort": "low",
-      "toolsPolicy": "Fully supplied isolated translation; project documents disabled for this one-shot task; no-tool instruction is not a proof of tools unavailable.",
-      "schemaVersion": 2
+      "toolsPolicy": "Isolated supplied translation: Codex project docs disabled; Claude tools and hooks disabled with a fixed translation system prompt. Subscription login remains owned by the official CLI.",
+      "schemaVersion": 4,
+      "supportedProviders": [
+        "codex",
+        "claude"
+      ],
+      "cacheVersion": "v4-isolated-checked"
     }
   },
   "providers": {
