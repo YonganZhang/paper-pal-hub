@@ -35,6 +35,8 @@ REQUIRED = (
     'tests/test_versions.py', 'tests/test_figures.py',
     'tests/figure_task_contract.test.mjs', 'tests/browser_versions.js',
     'tests/browser_figure_studio.js',
+    'tests/browser_retry_identity.js', 'tests/test_portability.py',
+    'tests/runtime_paths.test.mjs',
 )
 OPTIONAL = ('docs/local-cli.md',)
 README_SOURCE = 'docs/public-readme.md'

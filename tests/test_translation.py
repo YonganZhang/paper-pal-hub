@@ -3,13 +3,15 @@ import json
 import tempfile
 import unittest
 import sys
+import os
+import signal
 from pathlib import Path
 from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from translation import TranslationJobs, project_glossary, stop_process_group, ENGINE
+from translation import TranslationJobs, project_glossary, project_ai_model, stop_process_group, ENGINE
 
 
 class TranslationTests(unittest.IsolatedAsyncioTestCase):
@@ -67,6 +69,64 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(stop_process_group(StuckProcess(), grace=.01), .1)
         self.assertEqual(kill.call_count, 2)
 
+    async def test_ai_model_reaches_worker_and_separates_cached_translations(self):
+        repo=Path(self.papers[0]['repo'])
+        config=repo/'.paper-pal.json'
+        worker=self.jobs.root/'translation-ai.mjs'
+        worker.write_text("let s='';for await(const c of process.stdin)s+=c;const p=JSON.parse(s);for(let i=0;i<p.texts.length;i++)console.log(JSON.stringify({index:i,text:p.aiModel+': '+p.texts[i]}));")
+        async def translated():
+            response=await self.client.post('/papers/alpha/hub/translate',json={'engine':'ai','texts':['Original 96.1%']})
+            self.assertEqual(response.status,202)
+            job=await response.json()
+            for _ in range(100):
+                current=await(await self.client.get('/papers/alpha/hub/translate/'+job['id'])).json()
+                if current['status']=='done':return current
+                if current['status']=='error':self.fail(current['error'])
+                await asyncio.sleep(.01)
+            self.fail('AI fixture worker did not complete')
+        config.write_text(json.dumps({'translation':{'aiModel':'model-a'}}))
+        first=await translated()
+        config.write_text(json.dumps({'translation':{'aiModel':'model-b'}}))
+        second=await translated()
+        self.assertNotEqual(first['id'],second['id'])
+        self.assertEqual(first['translations'],['model-a: Original 96.1%'])
+        self.assertEqual(second['translations'],['model-b: Original 96.1%'])
+        self.jobs.jobs.clear()
+        config.write_text(json.dumps({'translation':{'aiModel':'model-a'}}))
+        with patch.object(self.jobs,'run',side_effect=AssertionError('Model A should come from disk cache')):
+            again=await translated()
+        self.assertEqual(again['id'],first['id'])
+        with patch.dict('os.environ',{'PAPER_HUB_TRANSLATION_MODEL':'environment-model'}):
+            self.assertEqual(project_ai_model(self.papers[0]),'model-a')
+            config.write_text('{}')
+            self.assertEqual(project_ai_model(self.papers[0]),'environment-model')
+
+    async def test_failed_worker_terminates_its_remaining_descendants(self):
+        self.jobs.python=Path(sys.executable)
+        child=self.jobs.root/'child.py'
+        child.write_text("import os,signal,time\nfrom pathlib import Path\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\nPath(__file__+'.pid').write_text(str(os.getpid()))\ntime.sleep(60)\n")
+        worker=self.jobs.root/'translate-worker.py'
+        worker.write_text("import subprocess,sys,time,json\nfrom pathlib import Path\njson.load(sys.stdin)\nchild=Path(__file__).with_name('child.py')\nsubprocess.Popen([sys.executable,str(child)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\nwhile not Path(str(child)+'.pid').exists():time.sleep(.01)\nsys.exit(2)\n")
+        pid=None
+        try:
+            response=await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original']})
+            job=await response.json()
+            for _ in range(100):
+                current=await(await self.client.get('/papers/alpha/hub/translate/'+job['id'])).json()
+                if current['status']=='error':break
+                await asyncio.sleep(.01)
+            self.assertEqual(current['status'],'error')
+            pid=int(Path(str(child)+'.pid').read_text())
+            for _ in range(50):
+                status=Path('/proc')/str(pid)/'stat'
+                if not status.exists() or status.read_text().split()[2]=='Z':break
+                await asyncio.sleep(.01)
+            else:self.fail('Failed translation left a CLI descendant running')
+        finally:
+            if pid:
+                try:os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+
     async def test_progress_and_paragraph_reuse_after_one_paragraph_changes(self):
         self.jobs.python=Path(sys.executable)
         worker=self.jobs.root/'translate-worker.py'
@@ -79,7 +139,8 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(.01)
             self.fail('Worker progress timeout')
         with patch.dict('os.environ',{'ANTHROPIC_API_KEY':'fixture-key','UNRELATED_SECRET':'fixture-secret',
-                                      'https_proxy':'http://fixture-proxy','LC_CTYPE':'C.UTF-8'}):
+                                      'https_proxy':'http://fixture-proxy','LC_CTYPE':'C.UTF-8',
+                                      'CODEX_BIN':'/fixture/bin/codex','PAPER_HUB_TRANSLATION_MODEL':'fixture-model'}):
             first=await (await self.client.post('/papers/alpha/hub/translate',json={'texts':['First','Second']})).json()
             partial=await wait(first,False)
             self.assertEqual(partial['translations'],['中文 First',None])
@@ -90,6 +151,8 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(env['https_proxy'],'http://fixture-proxy')
             self.assertEqual(env['LC_CTYPE'],'C.UTF-8')
             self.assertEqual(env['CUDA_VISIBLE_DEVICES'],'')
+            self.assertEqual(env['CODEX_BIN'],'/fixture/bin/codex')
+            self.assertEqual(env['PAPER_HUB_TRANSLATION_MODEL'],'fixture-model')
         second=await (await self.client.post('/papers/alpha/hub/translate',json={'texts':['First','Changed']})).json()
         self.assertEqual(second['translations'][0],'中文 First')
         result=await wait(second)

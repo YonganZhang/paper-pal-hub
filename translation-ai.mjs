@@ -7,19 +7,21 @@ import {pathToFileURL,fileURLToPath} from 'node:url';
 delete process.env.TINYFISH_API_KEY;
 const {buildAgentInvocation,childEnvironment,redactSecrets}=await import(pathToFileURL(path.join(process.env.PAPER_PAL_DIR || path.join(homedir(),'.local/share/paper-pal'),'agent-providers.mjs')));
 const chunks=[]; for await (const chunk of process.stdin) chunks.push(chunk);
-const {texts,glossary}=JSON.parse(Buffer.concat(chunks));
+const {texts,glossary,aiModel}=JSON.parse(Buffer.concat(chunks));
+const model=aiModel || process.env.PAPER_HUB_TRANSLATION_MODEL || 'gpt-5.6-luna';
+if(typeof model!=='string'||!model.trim()||model.length>128||/[\r\n\0]/.test(model))throw new Error('Invalid AI translation model');
 const root=await fs.mkdtemp(path.join(tmpdir(),'paper-translation-'));
 let active;
 process.on('SIGTERM',()=>{if(active&&!active.killed)active.kill('SIGTERM');});
 try {
   const schema=path.join(root,'schema.json');
-  const config={codex:{command:path.join(homedir(),'.npm-global/bin/codex'),model:'gpt-5.6-luna'}};
+  const config={codex:{command:'codex',model}};
   for(let start=0;start<texts.length;start+=10){
     const batch=texts.slice(start,start+10),outputPath=path.join(root,'answer.json');
     const paragraphs=Object.fromEntries(batch.map((text,index)=>['p'+index,text]));
     await fs.writeFile(schema,JSON.stringify({type:'object',properties:Object.fromEntries(Object.keys(paragraphs).map(key=>[key,{type:'string'}])),required:Object.keys(paragraphs),additionalProperties:false}));
     const prompt='Translate the supplied English academic paragraphs into precise, natural Simplified Chinese. This is a fully specified, isolated translation task. Do not use tools or inspect files. Preserve every number, percentage, sign, citation, named model, LaTeX/math fragment, and named category label exactly. Do not add explanations or change scientific claims. Follow the supplied project glossary, applying each source term in its scientific context, including hyphenated variants. Return a JSON object with exactly the SAME KEYS as paragraphs (p0, p1, ...). Every value must be the complete translation of that key, including short titles.\n'+JSON.stringify({glossary,paragraphs});
-    const invocation=await buildAgentInvocation({provider:'codex',config,prompt,outputPath,repoRoot:root,model:'gpt-5.6-luna',reasoningEffort:'low',schemaPath:schema});
+    const invocation=await buildAgentInvocation({provider:'codex',config,prompt,outputPath,repoRoot:root,model,reasoningEffort:'low',schemaPath:schema});
     // Fully supplied one-shot translation, deliberately separate from the project's Paper AI workspace.
     invocation.args.splice(1,0,'--config','project_doc_max_bytes=0');
     await new Promise((resolve,reject)=>{

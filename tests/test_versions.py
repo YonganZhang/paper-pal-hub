@@ -10,7 +10,7 @@ from unittest.mock import patch
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
-from versions import VersionService, create_snapshot, compare, file_path, digest_file, ArchiveError
+from versions import VersionService, create_snapshot, compare, file_path, digest_file, inventory, ArchiveError
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -121,6 +121,40 @@ class VersionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text['before']['sha256'],text['after']['sha256'])
         stale=await self.client.get(text['after']['url'])
         self.assertEqual(stale.status,409)
+
+    async def test_snapshot_rejects_figure_metadata_changed_before_copy(self):
+        first = True
+        def change_after_inventory(repo, config):
+            nonlocal first
+            captured = inventory(repo, config)
+            if first:
+                first = False
+                Image.new('RGB',(12,12),'blue').save(self.repo/'figs/one.png')
+            return captured
+        with patch('versions.inventory',side_effect=change_after_inventory):
+            with self.assertRaises(ArchiveError) as conflict:
+                create_snapshot(self.repo,request_id='mixed-figure-request')
+        self.assertEqual(conflict.exception.status,409)
+        self.assertFalse((self.repo/'.paper-pal/versions/v0.0').exists())
+        record=(await self.archive())['version']
+        value=json.loads(Path(record['manifest_path']).read_text())
+        self.assertEqual(value['figures'][0]['sha256'],value['files']['figs/one.png']['sha256'])
+
+    async def test_snapshot_rejects_configuration_changed_before_copy(self):
+        first = True
+        def change_after_inventory(repo, config):
+            nonlocal first
+            captured = inventory(repo, config)
+            if first:
+                first = False
+                changed=dict(config,defaultDocument='paper/different.tex')
+                (self.repo/'.paper-pal.json').write_text(json.dumps(changed))
+            return captured
+        with patch('versions.inventory',side_effect=change_after_inventory):
+            with self.assertRaises(ArchiveError) as conflict:
+                create_snapshot(self.repo,request_id='mixed-config-request')
+        self.assertEqual(conflict.exception.status,409)
+        self.assertFalse((self.repo/'.paper-pal/versions/v0.0').exists())
 
 
 if __name__=='__main__':unittest.main()

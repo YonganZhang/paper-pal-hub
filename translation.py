@@ -5,6 +5,7 @@ import json
 import os
 import logging
 import signal
+import re
 import tempfile
 from pathlib import Path
 
@@ -15,7 +16,8 @@ ENGINE = 'argos-1.11.0-en-zh-1.9-int8-beam1-v3'
 
 def worker_environment(source, task_tmp):
     """Keep runtime, locale, certificate and network settings; no unrelated keys."""
-    keep = {'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'CODEX_HOME', 'PAPER_PAL_DIR',
+    keep = {'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'CODEX_HOME', 'CODEX_BIN',
+            'PAPER_PAL_DIR', 'PAPER_HUB_TRANSLATION_MODEL',
             'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'SSL_CERT_FILE',
             'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'REQUESTS_CA_BUNDLE'}
     proxy = {'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'}
@@ -47,9 +49,13 @@ async def stop_process_group(process, grace=3):
             return
         try:
             await asyncio.wait_for(process.wait(), grace)
-            return
         except asyncio.TimeoutError:
-            continue
+            pass
+        if sig == signal.SIGTERM:
+            # A reaped leader can still leave a CLI descendant in its process group.
+            await asyncio.sleep(min(grace, .05))
+        elif getattr(process, 'returncode', None) is not None:
+            return
     logging.getLogger(__name__).warning('Translation worker %s has not reaped after SIGKILL', process.pid)
 
 
@@ -74,6 +80,16 @@ def project_glossary(paper):
         return glossary
     except FileNotFoundError:
         return {}
+
+
+def project_ai_model(paper):
+    """Freeze the requested translation model and use it in cache identity."""
+    config_path = Path(paper['repo']) / '.paper-pal.json'
+    config = json.loads(config_path.read_text()) if config_path.is_file() else {}
+    model = config.get('translation', {}).get('aiModel') or os.environ.get('PAPER_HUB_TRANSLATION_MODEL') or 'gpt-5.6-luna'
+    if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}', model):
+        raise ValueError('Invalid translation model')
+    return model
 
 
 class TranslationJobs:
@@ -109,9 +125,10 @@ class TranslationJobs:
             return web.json_response({'error': '翻译引擎尚未安装。'}, status=503)
         try:
             glossary = project_glossary(paper)
+            model = project_ai_model(paper) if engine == 'ai' else None
         except (OSError, ValueError, KeyError, TypeError):
-            return web.json_response({'error': '论文术语表配置有误，请联系维护窗口。'}, status=503)
-        engine_id = 'paper-pal-codex-gpt-5.6-luna-low-v2' if engine == 'ai' else ENGINE
+            return web.json_response({'error': '论文翻译配置有误，请联系维护窗口。'}, status=503)
+        engine_id = f'paper-pal-codex-{model}-low-v2' if engine == 'ai' else ENGINE
         digest = cache_digest(engine_id, glossary, texts)
         key = (slug, digest)
         if self.jobs.get(key, {}).get('status') == 'error':
@@ -123,7 +140,7 @@ class TranslationJobs:
                     data = json.loads(cached.read_text())
                     if data.get('engine') != engine_id or not isinstance(data.get('translations'),list) or len(data['translations']) != len(texts) or any(not isinstance(t,str) or not t.strip() for t in data['translations']):
                         raise ValueError('Translation cache mismatch')
-                    self.jobs[key] = {'id': digest, 'status': 'done', 'translations': data['translations'], 'total': len(texts), 'completed': len(texts)}
+                    self.jobs[key] = {'id': digest, 'status': 'done', 'translations': data['translations'], 'total': len(texts), 'completed': len(texts), 'model': model}
                 except (OSError, ValueError, KeyError, TypeError):
                     cached.unlink(missing_ok=True)
             if key not in self.jobs:
@@ -136,7 +153,7 @@ class TranslationJobs:
                         value=json.loads(segment.read_text())
                         translated.append(value['text'] if value['engine']==engine_id and isinstance(value['text'],str) else None)
                     except (OSError,ValueError,KeyError,TypeError): translated.append(None)
-                self.jobs[key] = {'id': digest, 'status': 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated)}
+                self.jobs[key] = {'id': digest, 'status': 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated), 'model': model}
                 task = asyncio.create_task(self.run(key, texts, cached, glossary, engine_id))
                 self.tasks.add(task)
                 task.add_done_callback(self.tasks.discard)
@@ -154,63 +171,77 @@ class TranslationJobs:
         job = self.jobs[key]
         process = None
         diagnostics = None
+        terminal = None
+        acquired = False
         try:
-            async with self.semaphore:
-                job['status'] = 'running'
-                missing=[i for i,t in enumerate(job['translations']) if t is None]
-                if not missing:
-                    save_cache(cached,{'engine':engine_id,'translations':job['translations']})
-                    job['status']='done'
-                    return
-                command = [str(self.python), str(self.root / 'translate-worker.py')] if engine_id == ENGINE else ['node', str(self.root / 'translation-ai.mjs')]
-                cached.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                diagnostic_path = cached.with_suffix('.log')
-                diagnostics = open(diagnostic_path, 'wb')
-                diagnostic_path.chmod(0o600)
-                task_tmp = Path.home() / 'tmp/paper-hub-translation'
-                task_tmp.mkdir(parents=True, exist_ok=True, mode=0o700)
-                process = await asyncio.create_subprocess_exec(
-                    *command,
-                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                    stderr=diagnostics, start_new_session=True,
-                    env=worker_environment(os.environ, task_tmp))
-                async def collect():
-                    process.stdin.write(json.dumps({'texts': [texts[i] for i in missing], 'glossary': glossary}).encode())
-                    await process.stdin.drain()
-                    process.stdin.close()
-                    received=0
-                    async for line in process.stdout:
-                        result = json.loads(line)
-                        if result['index'] != received or received>=len(missing) or not isinstance(result['text'], str) or not result['text'].strip():
-                            raise ValueError('Invalid translation result')
-                        index=missing[received]
-                        job['translations'][index]=result['text']
-                        save_cache(cached.parent/('p-'+cache_digest(engine_id,glossary,texts[index])+'.json'),{'engine':engine_id,'text':result['text']})
-                        received+=1
-                        job['completed'] += 1
-                    if await process.wait() != 0 or job['completed'] != len(texts):
-                        raise ValueError('Translation worker failed')
-                await asyncio.wait_for(collect(), 600)
-                cached.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            await self.semaphore.acquire()
+            acquired = True
+            job['status'] = 'running'
+            missing=[i for i,t in enumerate(job['translations']) if t is None]
+            if not missing:
                 save_cache(cached,{'engine':engine_id,'translations':job['translations']})
-                job['status'] = 'done'
+                terminal = {'status':'done'}
+                return
+            command = [str(self.python), str(self.root / 'translate-worker.py')] if engine_id == ENGINE else ['node', str(self.root / 'translation-ai.mjs')]
+            cached.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            diagnostic_path = cached.with_suffix('.log')
+            diagnostics = open(diagnostic_path, 'wb')
+            diagnostic_path.chmod(0o600)
+            task_tmp = Path.home() / 'tmp/paper-hub-translation'
+            task_tmp.mkdir(parents=True, exist_ok=True, mode=0o700)
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=diagnostics, start_new_session=True,
+                env=worker_environment(os.environ, task_tmp))
+            async def collect():
+                process.stdin.write(json.dumps({'texts': [texts[i] for i in missing], 'glossary': glossary, 'aiModel': job.get('model')}).encode())
+                await process.stdin.drain()
+                process.stdin.close()
+                received=0
+                async for line in process.stdout:
+                    result = json.loads(line)
+                    if result['index'] != received or received>=len(missing) or not isinstance(result['text'], str) or not result['text'].strip():
+                        raise ValueError('Invalid translation result')
+                    index=missing[received]
+                    job['translations'][index]=result['text']
+                    save_cache(cached.parent/('p-'+cache_digest(engine_id,glossary,texts[index])+'.json'),{'engine':engine_id,'text':result['text']})
+                    received+=1
+                    job['completed'] += 1
+                if await process.wait() != 0 or job['completed'] != len(texts):
+                    raise ValueError('Translation worker failed')
+            await asyncio.wait_for(collect(), 600)
+            cached.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            save_cache(cached,{'engine':engine_id,'translations':job['translations']})
+            terminal = {'status':'done'}
         except asyncio.CancelledError:
-            job.update(status='error', error='服务已重启，请重新点击翻译。')
+            terminal = {'status':'error', 'error':'服务已重启，请重新点击翻译。'}
             raise
         except (OSError, ValueError, KeyError, asyncio.TimeoutError):
-            job.update(status='error', error='本次翻译未完成，请重试。原文仍保留。')
+            terminal = {'status':'error', 'error':'本次翻译未完成，请重试。原文仍保留。'}
         finally:
-            if process and process.returncode is None:
-                await stop_process_group(process)
-            if diagnostics:
-                diagnostics.close()
-            # Bound in-memory history; successful translations remain on disk.
-            if len(self.jobs) > 100:
-                for old in list(self.jobs):
-                    if old != key and self.jobs[old]['status'] not in ('queued', 'running'):
-                        del self.jobs[old]
-                        if len(self.jobs) <= 80:
-                            break
+            try:
+                if process:
+                    stopping = asyncio.create_task(stop_process_group(process))
+                    try:
+                        await asyncio.shield(stopping)
+                    except asyncio.CancelledError:
+                        await stopping
+                        raise
+            finally:
+                if acquired:
+                    self.semaphore.release()
+                if diagnostics:
+                    diagnostics.close()
+                if terminal:
+                    job.update(terminal)
+                # Bound in-memory history; successful translations remain on disk.
+                if len(self.jobs) > 100:
+                    for old in list(self.jobs):
+                        if old != key and self.jobs[old]['status'] not in ('queued', 'running'):
+                            del self.jobs[old]
+                            if len(self.jobs) <= 80:
+                                break
 
     async def cleanup(self, app):
         for task in self.tasks:

@@ -57,10 +57,10 @@ Sign in through each official CLI's own authentication workflow. For a paper who
 entry point is `paper/main.tex` and PDF is `build/main.pdf`:
 
 ```sh
-python3 cli.py add /absolute/path/to/paper --id my-paper --title "My paper" \
+.venv/bin/python cli.py add /absolute/path/to/paper --id my-paper --title "My paper" \
   --main paper/main.tex --source-root paper --pdf build/main.pdf --provider codex \
   --base-url http://127.0.0.1:4318 --json
-python3 cli.py status --json
+.venv/bin/python cli.py status --json
 ```
 
 Choose a model already verified for your account with `--model`. Existing project
@@ -86,6 +86,12 @@ Deployment units must point to this checkout and its Python environment. No
 production account credentials, tunnel configuration or paper is shipped. Set your
 own base URL instead of relying on legacy deployment defaults.
 
+Registration invokes the pinned checkout's `bin/paper-pal.mjs` with Node; a global
+`paper-pal` executable at a fixed npm path is not required. New user services keep
+the resolved Node executable, upstream directory, PATH, and explicit CODEX_BIN /
+CLAUDE_BIN overrides. Repeated registration preserves existing service units;
+update an older unit's environment explicitly when moving a CLI or checkout.
+
 Optional English–Chinese CPU translation uses `uv` and a separate environment:
 
 ```sh
@@ -95,6 +101,12 @@ bash scripts/install-translation.sh
 This installs Argos Translate and verifies the model hash from the lock file.
 It downloads a model separately; no model is bundled. AI translation is a separate
 subscription-backed option and requires its configured model to be available.
+Set `translation.aiModel` in a paper's `.paper-pal.json`, or set
+`PAPER_HUB_TRANSLATION_MODEL` in the gateway environment, to select an available
+Codex translation model. The project setting wins; the compatibility default is
+`gpt-5.6-luna`. Each job freezes its model, which is included in its cache key.
+Changing a model does not silently reuse another model's translations. Ordinary
+CPU translation and its caches remain independent of this setting.
 
 ## Model adapters and skills
 
@@ -145,6 +157,13 @@ image-generation subscriptions are not assumed to expose an image API. AI-produc
 assets can be imported as candidates through the local interface and reviewed
 before acceptance. Accepted image changes are archived with provenance.
 
+Subsequent figure jobs inherit accepted helper scripts and processed data as well
+as the originally registered filenames, excluding runtime logs and candidate
+outputs. Current project guidance, manuscript text and project skills are supplied
+afresh; referenced context outside the staged copy may be read from the original
+project in read-only mode. Global rules and skills remain live reads. Concurrent
+input changes during copying cause rejection rather than a mixed candidate.
+
 Saving drafts, approving candidates, and creating a numbered archive are distinct
 actions. Compare views are read-only. Translation never overwrites the English
 LaTeX source. Back up each paper directory and its private `.paper-pal` state using
@@ -171,7 +190,7 @@ manifest paths; `--request-id` supports repeat-safe save/import automation.
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
-node --test tests/backend_contract.test.mjs tests/subscription_contract.test.mjs tests/figure_task_contract.test.mjs
+node --test tests/backend_contract.test.mjs tests/subscription_contract.test.mjs tests/figure_task_contract.test.mjs tests/runtime_paths.test.mjs
 ```
 
 Gateway/backend tests require the pinned upstream checkout. Browser fixture scripts

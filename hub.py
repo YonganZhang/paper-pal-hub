@@ -405,7 +405,8 @@ def main():
     parser.add_argument('--host', action='append', required=True)
     parser.add_argument('--port', type=int, default=4318)
     parser.add_argument('--local', action='store_true', help='Permit local HTTP for staging only')
-    parser.add_argument('--upstream-dir', type=Path, default=Path.home() / '.local/share/paper-pal')
+    parser.add_argument('--upstream-dir', type=Path,
+                        default=Path(os.environ.get('PAPER_PAL_DIR') or Path.home() / '.local/share/paper-pal').expanduser())
     args = parser.parse_args()
     if args.auth_file.stat().st_mode & 0o077:
         parser.error('Auth file must be private (0600)')

@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import time
+import subprocess
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -12,7 +13,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
-from figures import FigureStudio, figure_records, validate_asset
+from figures import FigureStudio, figure_records, validate_asset, digest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -208,12 +209,12 @@ else:
                 validate_asset(svg)
 
     async def test_timeout_stops_process_group_and_retains_original(self):
-        self.studio.timeout = .6
+        self.studio.timeout = 3
         job = await self.wait(await self.start(instruction='SLOW_TASK'))
         self.assertEqual(job['status'],'error',job)
         self.assertEqual((self.repo/'figures/main.png').read_bytes(),self.original)
         log = Path(job['manifest_path']).parent/'worker.log'
-        self.assertIn('timed out after 0.6 seconds', log.read_text())
+        self.assertIn('timed out after 3 seconds', log.read_text())
         self.assertEqual(log.stat().st_mode & 0o777, 0o600)
         pid_path = Path(job['workspace_path'])/'worker-pid.txt'
         self.assertTrue(pid_path.is_file(), 'fake CLI was not launched before timeout')
@@ -226,6 +227,39 @@ else:
             await asyncio.sleep(.025)
         else:
             self.fail('Timed-out figure subprocess is still running')
+
+    async def test_shutdown_during_worker_cleanup_waits_for_process_exit(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_stop = self.studio.stop_worker
+        async def delayed_stop(process):
+            entered.set()
+            await release.wait()
+            await original_stop(process)
+        with patch.object(self.studio,'stop_worker',side_effect=delayed_stop):
+            job = await self.start(instruction='SLOW_TASK',request_id='shutdown-during-cleanup')
+            pid_path=Path(job['workspace_path'])/'worker-pid.txt'
+            for _ in range(250):
+                if pid_path.is_file():
+                    break
+                await asyncio.sleep(.02)
+            self.assertTrue(pid_path.is_file(),'fake CLI never started')
+            pid=int(pid_path.read_text())
+            task=next(iter(self.studio.tasks))
+            task.cancel()
+            await asyncio.wait_for(entered.wait(),2)
+            # Shutdown cancels the same task again while stop_worker is suspended.
+            closing=asyncio.create_task(self.client.close())
+            await asyncio.sleep(.05)
+            self.assertFalse(closing.done(),'service closed before worker cleanup completed')
+            self.assertEqual(self.studio.jobs[('alpha',job['id'])]['status'],'running')
+            release.set()
+            await asyncio.wait_for(closing,5)
+        durable=json.loads(Path(job['manifest_path']).read_text())
+        self.assertEqual(durable['status'],'error')
+        self.assertEqual((self.repo/'figures/main.png').read_bytes(),self.original)
+        stat=Path('/proc')/str(pid)/'stat'
+        self.assertTrue(not stat.exists() or stat.read_text().split()[2]=='Z')
+        self.assertFalse(self.studio.tasks)
 
     async def test_interrupted_accept_recovers_and_next_edit_uses_latest_recipe(self):
         job = await self.wait(await self.start())
@@ -243,6 +277,117 @@ else:
         baseline = Path(second['manifest_path']).parent/'inputs/scripts/draw.py'
         self.assertEqual(baseline.read_text(),'# updated staged drawing script\n')
         self.assertIn('accepted-archive/workspace/scripts/draw.py',second['input_sources']['scripts/draw.py'])
+
+    async def test_accepted_new_dependencies_survive_two_followup_jobs(self):
+        job, _ = self.studio.create('alpha','fig1','new helper','local-import',None,'closure-first')
+        for index in range(2):
+            workspace = Path(job['workspace_path'])
+            (workspace/'scripts/helper.py').write_text('from pathlib import Path\nVALUE = Path("processed.csv").read_text().strip()\n')
+            (workspace/'scripts/draw.py').write_text('from helper import VALUE\nprint(VALUE)\n')
+            (workspace/'processed.csv').write_text('processed-round-'+str(index))
+            (workspace/'.mpl-cache').mkdir(exist_ok=True)
+            (workspace/'.mpl-cache/fontlist.json').write_text('cache')
+            (workspace/'assistant-summary.txt').write_text('transient assistant output')
+            Image.new('RGB',(8,8),'blue' if index == 0 else 'green').save(workspace/'candidate.png')
+            job.update(status='proposed',candidate_sha256=validate_asset(workspace/'candidate.png'))
+            self.studio.persist(job)
+            response = await self.client.post('/papers/alpha/hub/figures/jobs/'+job['id']+'/accept',
+                json={'expected_sha256':job['original_sha256']})
+            self.assertEqual(response.status,200,await response.text())
+            accepted = await response.json()
+            job, _ = self.studio.create('alpha','fig1','followup '+str(index),'local-import',None,'closure-next-'+str(index))
+            next_workspace = Path(job['workspace_path'])
+            result = subprocess.run([sys.executable,'scripts/draw.py'],cwd=next_workspace,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.strip(),'processed-round-'+str(index))
+            self.assertEqual(job['input_hashes']['processed.csv'],digest(next_workspace/'processed.csv'))
+            self.assertIn('accepted-archive/workspace/processed.csv',job['input_sources']['processed.csv'])
+            self.assertFalse((next_workspace/'assistant-summary.txt').exists())
+            self.assertFalse((next_workspace/'.mpl-cache').exists())
+            self.assertFalse((next_workspace/'candidate.png').exists())
+            self.assertEqual(job['original_sha256'],accepted['accepted_sha256'])
+        self.assertEqual((self.repo/'scripts/draw.py').read_text(),'# frozen original script\n')
+
+    async def test_context_uses_current_guidance_and_all_project_skills(self):
+        (self.repo/'paper').mkdir();(self.repo/'paper/main.tex').write_text('Current paper text')
+        (self.repo/'guide.md').write_text('current guidance v1')
+        (self.repo/'entry.md').write_text('entry point')
+        skill=self.repo/'.agents/skills/other-skill';skill.mkdir(parents=True)
+        (skill/'SKILL.md').write_text('other project skill v1')
+        (skill/'resource.txt').write_text('skill supporting material')
+        self.config.update(sourceRoot='paper',defaultDocument='paper/main.tex',
+            agent={'guidanceFiles':['guide.md'],'entryPoints':['entry.md']})
+        (self.repo/'.paper-pal.json').write_text(json.dumps(self.config))
+        first=self.studio.import_candidate('alpha','fig1',self.repo/'figures/main.png',request_id='context-first')
+        response=await self.client.post('/papers/alpha/hub/figures/jobs/'+first['id']+'/accept',
+            json={'expected_sha256':first['original_sha256']})
+        self.assertEqual(response.status,200,await response.text())
+        (self.repo/'guide.md').write_text('current guidance v2')
+        (skill/'SKILL.md').write_text('other project skill v2')
+        second,_=self.studio.create('alpha','fig1','read updated guidance','local-import',None,'context-second')
+        workspace=Path(second['workspace_path'])
+        self.assertEqual((workspace/'guide.md').read_text(),'current guidance v2')
+        self.assertEqual((workspace/'.agents/skills/other-skill/SKILL.md').read_text(),'other project skill v2')
+        self.assertEqual((workspace/'.agents/skills/other-skill/resource.txt').read_text(),'skill supporting material')
+        self.assertIn('entry.md',second['context_paths'])
+        self.assertIn('paper/main.tex',second['context_paths'])
+        self.assertEqual(second['original_project_root'],str(self.repo))
+        self.assertFalse((workspace/'.paper-pal.json').exists())
+        self.assertEqual(second['input_sources']['guide.md'],'guide.md')
+
+    async def test_context_rejects_escape_private_config_and_excess_budget(self):
+        outside=self.root/'outside.md';outside.write_text('must not copy')
+        (self.repo/'escape.md').symlink_to(outside)
+        for name in ('../outside.md','escape.md','.paper-pal.json'):
+            self.config['agent']={'guidanceFiles':[name]}
+            (self.repo/'.paper-pal.json').write_text(json.dumps(self.config))
+            with self.assertRaises(ValueError):
+                self.studio.create('alpha','fig1','unsafe context','local-import',None,'unsafe-'+name)
+        (self.repo/'escape.md').unlink()
+        self.config['agent']={'guidanceFiles':['AGENTS.md']}
+        (self.repo/'.paper-pal.json').write_text(json.dumps(self.config))
+        with patch('figures.MAX_INPUT',1),self.assertRaises(ValueError):
+            self.studio.create('alpha','fig1','budget','local-import',None,'budget-input')
+        self.assertFalse(list(self.studio.storage(self.repo).glob('fig_*')))
+
+    async def test_input_change_during_copy_rejects_mixed_job(self):
+        copyfile=__import__('shutil').copyfile
+        changed=False
+        def changing_copy(source,target,*args,**kwargs):
+            nonlocal changed
+            result=copyfile(source,target,*args,**kwargs)
+            if not changed and Path(source)==self.repo/'data.csv':
+                changed=True
+                (self.repo/'data.csv').write_text('x,y\n1,999\n')
+            return result
+        with patch('figures.shutil.copyfile',side_effect=changing_copy),self.assertRaisesRegex(ValueError,'复制期间发生更新'):
+            self.studio.create('alpha','fig1','concurrent edit','local-import',None,'mixed-input-copy')
+        self.assertTrue(changed)
+        self.assertFalse(list(self.studio.storage(self.repo).glob('fig_*')))
+
+    async def test_root_context_discovery_skips_history_but_honors_explicit_entry(self):
+        for directory in ('_legacy','_tmp','_archive','_drafts','_snapshots'):
+            folder=self.repo/directory;folder.mkdir()
+            (folder/'old.tex').write_text('unrelated old draft')
+        (self.repo/'current.tex').write_text('current manuscript')
+        (self.repo/'_archive/reference.md').write_text('explicitly requested reference')
+        self.config['agent']={'entryPoints':['_archive/reference.md']}
+        (self.repo/'.paper-pal.json').write_text(json.dumps(self.config))
+        job,_=self.studio.create('alpha','fig1','context','local-import',None,'skip-history')
+        workspace=Path(job['workspace_path'])
+        self.assertTrue((workspace/'current.tex').is_file())
+        self.assertTrue((workspace/'_archive/reference.md').is_file())
+        for directory in ('_legacy','_tmp','_archive','_drafts','_snapshots'):
+            self.assertFalse((workspace/directory/'old.tex').exists())
+
+    async def test_terminal_persist_failure_releases_worker_slot(self):
+        job,_=self.studio.create('alpha','fig1','no process','local-import',None,'persist-slot')
+        # No CLI executes: injected durable-store failure occurs before spawning.
+        with patch.object(self.studio,'persist',side_effect=OSError('fixture storage unavailable')):
+            with self.assertRaises(OSError):
+                await self.studio.run('alpha',job,self.config)
+        await asyncio.wait_for(self.studio.semaphore.acquire(),1)
+        self.studio.semaphore.release()
 
     async def test_svg_local_clip_and_plot_style_are_valid(self):
         svg = self.root/'plot.svg'

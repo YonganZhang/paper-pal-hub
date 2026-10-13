@@ -16,6 +16,22 @@ GET /figures -> {schema_version:1,figures:[...metadata + {asset_url,preview_url,
 
 POST /figures/jobs {figure_id,instruction,provider:"codex"|"claude",model?,request_id} ->202 {id,status,...}; GET /figures/jobs/<id> -> {id,status:"queued"|"running"|"proposed"|"accepted"|"error",figure_id,provider,model,instruction,created_at,error?,candidate_url?,candidate_preview_url?,workspace_path,manifest_path,summary?}. Explicit click only. Run a new one-shot subscription CLI process in private staged workspace, not a new agent runtime. Copy registered scripts/data/assets preserving relative paths. Discuss/read globals/project skill as applicable; generate candidate asset in workspace only. Codex workspace-write, same current login via subscription-cli; Claude tool policy must be explicit and no claim of OS isolation. Worker's deliverable actual nonempty validated PNG/JPEG/SVG/PDF, no fake ready state. Keep original image until approval. POST /figures/jobs/<id>/accept {expected_sha256} -> {status:"accepted",...}; verify live original hash, archive original+candidate+job provenance, atomic replace target only, stale original409, already accepted idempotent. The corresponding paper AI reads current global plotting/imagegen/share-web-consultation skills and executes applicable tools itself. Codex native image availability is detected from the official CLI. Actual observed calls are recorded; image model identity remains unknown when unreported, never substituted with a claimed fixed Image2. No separate image API is configured. Support import candidate from an existing local AI-produced asset via Python public method/CLI helper (not arbitrary public file reads). job artifacts served by GET /figures/jobs/<id>/asset?preview=1. No shell or file path is exposed as an executable website endpoint. Limit active jobs, timeout/cancel/shutdown lifecycle; no permanent GPU workers. Figure service class FigureStudio(registry_reader,root) .install(app) under existing security middleware, .cleanup(app), original changes only accept endpoint. Tests use isolated repo and fake CLI, never real manuscript/real models.
 
+## Submission and worker settings
+
+Submission request IDs identify the complete frozen payload. Retrying an unknown
+result with the same payload reuses its ID; changing its name/note/parent or
+figure/instruction/provider/model uses a different ID. Concurrent parent changes
+still require a refreshed archive list. Delayed acknowledgments preserve newer
+form input. A figure job supplies `original_project_root` and `context_paths`;
+current guidance and skills are copied afresh, while accepted recipe helpers and
+processed data retain their source paths. Only staged output may be edited.
+
+AI translation uses project `translation.aiModel`, then gateway environment
+`PAPER_HUB_TRANSLATION_MODEL`, then the compatibility default `gpt-5.6-luna`.
+The requested model is frozen per job and included in both chapter and paragraph
+cache identities. Translation and figure jobs finish process-group cleanup before
+publishing a terminal status or releasing their active-worker slot.
+
 ## Public release
 
 Export allowlisted app modules, web assets, tests and templates to a clean generated repo under _tmp/public-release; omit _reports, project papers, runtime, credentials, user history and app's private git history. Public source license MIT (upstream attribution retained). Never publish existing repo history. Public README explains dependencies/source pin/install/configuration, no scientific paper data or proprietary content. Runtime source resolution uses PAPER_PAL_DIR or the current HOME. Publish the clean export only after reviewing its exact file manifest.

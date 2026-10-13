@@ -197,7 +197,10 @@ def create_snapshot(repo, name='', note='', expected_parent=None, request_id=Non
                 destination.chmod(0o600)
                 records[name_path] = {'sha256': digest_file(destination), 'size': destination.stat().st_size}
             # Detect external edits during copying rather than publishing a mixed snapshot.
-            if inventory(repo, config)[0] != paths or any(digest_file(contained(repo, p)) != r['sha256'] for p, r in records.items()):
+            final_paths, final_figures, final_missing = inventory(repo, read_config(repo))
+            if (read_config(repo) != config or final_paths != paths or final_figures != figures
+                    or final_missing != missing
+                    or any(digest_file(contained(repo, p)) != r['sha256'] for p, r in records.items())):
                 raise ArchiveError('文件在存档期间发生更新，请稍后重新存档。', 409)
             pdf = config.get('pdf') if config.get('pdf') in records else None
             dependencies = [contained(repo, p).stat().st_mtime for p in paths if Path(p).suffix.lower() in SOURCE and p != pdf and not p.startswith('.paper-pal/')]

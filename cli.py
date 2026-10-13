@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -18,6 +19,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DEFAULT_REGISTRY = Path.home() / '.config/paper-pal/hub.json'
 SLUG = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
+
+
+def upstream_directory():
+    return Path(os.environ.get('PAPER_PAL_DIR') or Path.home() / '.local/share/paper-pal').expanduser().resolve()
+
+
+def node_command():
+    command = shutil.which('node')
+    if not command:
+        raise ValueError('Node 22+ is required; node was not found on PATH')
+    return command
 
 
 def atomic_json(path, data):
@@ -106,7 +118,10 @@ def create_config(repo, args):
     makefile = repo / '.paper-hub.mk'
     if makefile.exists() and args.build_script:
         raise ValueError('.paper-hub.mk already exists; configure manually to preserve it')
-    setup = [str(Path.home() / '.npm-global/bin/paper-pal'), 'setup', str(repo), '--main', args.main,
+    launcher = upstream_directory() / 'bin/paper-pal.mjs'
+    if not launcher.is_file():
+        raise ValueError('Pinned Paper Pal checkout is missing: ' + str(launcher))
+    setup = [node_command(), str(launcher), 'setup', str(repo), '--main', args.main,
              '--source', args.source_root, '--title', args.title, '--provider', args.provider,
              '--review-language', 'Chinese', '--no-compile', '--no-remember', '--json']
     if args.model:
@@ -207,10 +222,15 @@ def add(args):
             tmp = Path.home() / 'tmp/paper-hub' / args.id
             tmp.mkdir(parents=True, exist_ok=True, mode=0o700)
             launcher = Path(__file__).resolve().parent / 'backend-launch.mjs'
+            service_environment = {'PAPER_PAL_DIR': str(upstream_directory())}
+            service_environment.update({key: os.environ[key] for key in ('PATH', 'CODEX_BIN', 'CLAUDE_BIN') if key in os.environ})
+            environment_lines = ''.join('Environment=' + systemd_quote(key + '=' + value) + '\n'
+                                        for key, value in service_environment.items())
             unit.write_text('[Unit]\nDescription=Paper Pal ' + args.id + '\nAfter=network-online.target\n\n'
                             '[Service]\nType=simple\nWorkingDirectory=' + str(repo).replace('%', '%%') + '\n'
                             'Environment=' + systemd_quote('TMPDIR=' + str(tmp)) + '\n'
-                            'ExecStart=node ' + systemd_quote(launcher) + ' --repo . --port ' + str(port) + '\n'
+                            + environment_lines +
+                            'ExecStart=' + systemd_quote(node_command()) + ' ' + systemd_quote(launcher) + ' --repo . --port ' + str(port) + '\n'
                             'Restart=on-failure\nRestartSec=3\nTimeoutStopSec=10\nUMask=0077\n\n'
                             '[Install]\nWantedBy=default.target\n')
             try:

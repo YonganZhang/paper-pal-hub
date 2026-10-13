@@ -28,6 +28,69 @@ MAX_ASSET = 32 * 1024 * 1024
 MAX_INPUT = 384 * 1024 * 1024
 ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$')
 FORMATS = {'.png', '.jpg', '.jpeg', '.svg', '.pdf'}
+CONTEXT_TEXT = {'.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.txt'}
+CONTEXT_DISCOVERY_SKIP = {'_archive', '_legacy', '_tmp', '_drafts', '_snapshots'}
+RUNTIME_PARTS = {'.git', '.paper-pal', '.draft-review', '.mpl-cache', '__pycache__', 'node_modules'}
+RUNTIME_FILES = {'copiedtaskmanifest.json', 'assistant-summary.txt', 'cli-output.txt',
+                 'argv.json', 'env.json', 'received-prompt.txt', 'worker-pid.txt'}
+
+
+def reusable_path(name):
+    """Files eligible as recipe/context, excluding private or transient outputs."""
+    path = Path(name)
+    return (not any(part in RUNTIME_PARTS or part.startswith('.cache') for part in path.parts)
+            and path.name not in RUNTIME_FILES
+            and path.name not in {'.paper-pal.json', 'auth.json', 'credentials.json', 'hub-session.key'}
+            and not path.name.startswith('.env')
+            and path.suffix.lower() not in {'.pem', '.key', '.p12', '.pfx', '.pyc'}
+            and not (len(path.parts) == 1 and (path.stem == 'candidate' or path.name.startswith('assistant-')
+                                             or path.name.startswith('imported-source.'))))
+
+
+def context_paths(repo, config, recipe_paths=()):
+    """Current project guidance and paper text; global skills remain live reads."""
+    names = set()
+    for name in ('AGENTS.md', 'CLAUDE.md', config.get('defaultDocument')):
+        if name is not None:
+            path = contained(repo, name)
+            if not reusable_path(name):
+                raise ValueError('项目上下文不能包含凭证配置或运行文件')
+            if path.is_file():
+                names.add(name)
+    for settings in (config, config.get('agent', {}), config.get('codex', {}), config.get('claude', {})):
+        if not isinstance(settings, dict):
+            raise ValueError('项目上下文配置必须是对象')
+        for key in ('guidanceFiles', 'entryPoints', 'context_paths'):
+            values = settings.get(key, [])
+            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                raise ValueError('项目上下文必须是相对文件路径列表')
+            for name in values:
+                path = contained(repo, name)
+                if not reusable_path(name):
+                    raise ValueError('项目上下文不能包含凭证配置或运行文件')
+                if path.is_file():
+                    names.add(name)
+    source_name = config.get('sourceRoot', '.')
+    source_root = repo if source_name == '.' else contained(repo, source_name)
+    for directory, text_only in ((source_root, True), (repo/'.agents/skills', False)):
+        if directory.is_symlink() or not directory.resolve().is_relative_to(repo):
+            raise ValueError('项目上下文目录不能指向项目外部')
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob('*'):
+            name = path.relative_to(repo).as_posix()
+            if text_only and any(part in CONTEXT_DISCOVERY_SKIP for part in path.relative_to(directory).parts):
+                continue
+            if not reusable_path(name) or (text_only and path.suffix.lower() not in CONTEXT_TEXT):
+                continue
+            if text_only and name in recipe_paths and name not in names:
+                continue
+            contained(repo, name)
+            if path.is_symlink():
+                raise ValueError('项目上下文不能包含软链接')
+            if path.is_file():
+                names.add(name)
+    return sorted(names)
 
 
 def now():
@@ -356,15 +419,32 @@ class FigureStudio:
         identifier = 'fig_' + uuid.uuid4().hex
         folder = directory / identifier
         workspace = folder / 'workspace'
-        workspace.mkdir(parents=True, mode=0o700)
-        names = [record['path']] + record['source_paths'] + record['data_paths'] + record['reference_paths']
-        names += [name for name in ('AGENTS.md','CLAUDE.md','.agents/skills/paper-ai/SKILL.md') if (repo/name).is_file()]
+        current_context = context_paths(repo, config,
+            record['source_paths'] + record['data_paths'] + record['reference_paths'])
+        names = [record['path']] + record['source_paths'] + record['data_paths'] + record['reference_paths'] + current_context
         inputs, input_sources, total = {}, {}, 0
         revision_root = (repo / record['reproduction_workspace']) if record.get('reproduction_workspace') else None
         if revision_root and not revision_root.resolve().is_relative_to(repo):
             raise ValueError('已采用绘图配方路径无效')
         recipe_names = set(record['source_paths'] + record['data_paths'] + record['reference_paths'])
+        if revision_root:
+            previous = json.loads((repo/record['revision_manifest']).read_text())
+            previous_context = set(previous.get('context_paths', []))
+            # Preserve newly introduced helpers/data, not only the originally
+            # registered filenames. Current guidance always wins over an old copy.
+            for path in safe_tree_files(revision_root):
+                name = path.relative_to(revision_root).as_posix()
+                if (reusable_path(name) and name != record['path']
+                        and name not in previous_context and name not in current_context
+                        and name not in ('AGENTS.md', 'CLAUDE.md')
+                        and not name.startswith('.agents/skills/')):
+                    recipe_names.add(name)
+                    names.append(name)
+        recipe_names.difference_update(current_context)
         try:
+            if len(set(names)) > 2000:
+                raise ValueError('绘图输入超过 2000 个文件')
+            workspace.mkdir(parents=True, mode=0o700)
             for name in dict.fromkeys(names):
                 original = contained(repo, name)
                 revised = revision_root / name if revision_root and name in recipe_names else None
@@ -387,9 +467,14 @@ class FigureStudio:
                 target.chmod(0o600)
                 inputs[name] = digest(target)
                 input_sources[name] = str(original.relative_to(repo))
+            if digest(contained(repo,record['path'])) != record['sha256'] or any(
+                    not (repo/source).is_file() or digest(repo/source) != inputs[name]
+                    for name, source in input_sources.items()):
+                raise ValueError('图片或输入在复制期间发生更新，请重新生成候选')
             job = {'schema_version':1,'id':identifier,'request_id':request_id,'status':'queued','figure_id':figure_id,
                 'provider':provider,'model':model,'instruction':instruction,'created_at':now(),
                 'workspace_path':str(workspace),'manifest_path':str(folder/'job.json'),
+                'original_project_root':str(repo),'context_paths':current_context,
                 'figure':record,'original_sha256':record['sha256'],'input_hashes':inputs,'input_sources':input_sources,
                 'candidate_path':str(workspace/('candidate'+Path(record['path']).suffix.lower())),
                 'tools_policy':'Codex workspace-write 沙箱；Claude 仅限暂存副本的读写和 Bash 工具（无操作系统隔离）。'}
@@ -399,7 +484,8 @@ class FigureStudio:
             return job, True
         except Exception:
             self.jobs.pop((slug,identifier),None)
-            shutil.rmtree(folder)
+            if folder.exists():
+                shutil.rmtree(folder)
             raise
 
     async def start(self, request):
@@ -436,59 +522,83 @@ class FigureStudio:
 
     async def run(self, slug, job, config):
         process = None
+        acquired = cancelled = False
+        terminal = {}
         try:
-            async with self.semaphore:
-                job.update(status='running',started_at=now())
-                self.persist(job)
-                workspace = Path(job['workspace_path'])
-                payload = {'job':job,'config':{key:config.get(key,{}) for key in ('codex','claude')}}
-                environment = worker_environment(os.environ, workspace)
-                if os.environ.get('PAPER_PAL_DIR'):
-                    environment['PAPER_PAL_DIR'] = os.environ['PAPER_PAL_DIR']
-                process = await asyncio.create_subprocess_exec('node',str(self.root/'figure-task.mjs'),
-                    cwd=workspace, env=environment, stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,start_new_session=True)
-                # Node worker bounds stdout/stderr independently to avoid unbounded communicate buffers.
-                output, errors = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()),self.timeout)
-                if process.returncode == 0:
-                    receipt = json.loads(output)
-                    if receipt.get('provider') != job['provider'] or receipt.get('model') != job['model']:
-                        raise ValueError('绘图客户端执行回执不符')
-                    job['execution'] = receipt
-                (workspace.parent/'worker.log').write_bytes((output+errors)[-65536:])
-                (workspace.parent/'worker.log').chmod(0o600)
-                if process.returncode:
-                    raise ValueError('绘图客户端未成功完成，请检查订阅登录与任务日志')
-                candidate = Path(job['candidate_path'])
-                if candidate.is_symlink() or not candidate.resolve().is_relative_to(workspace):
-                    raise ValueError('候选图片不能指向暂存目录外部')
-                if (candidate.suffix.lower()=='.pdf' and not candidate.exists()
-                        and (workspace/'candidate.png').is_file()):
-                    raster = workspace/'candidate.png'
-                    validate_asset(raster)
-                    await asyncio.to_thread(package_raster_pdf,raster,candidate)
-                    job['raster_packaging'] = {'source':'candidate.png','source_sha256':digest(raster),
-                        'conversion':'Pillow raster to PDF; no image editing'}
-                candidate_hash = validate_asset(candidate)
-                files = safe_tree_files(workspace)
-                job.update(status='proposed',finished_at=now(),candidate_sha256=candidate_hash,
-                    output_hashes={str(path.relative_to(workspace)):digest(path) for path in files},
-                    summary='候选图片已生成；确认采用后才替换原图。')
+            await self.semaphore.acquire()
+            acquired = True
+            job.update(status='running',started_at=now())
+            self.persist(job)
+            workspace = Path(job['workspace_path'])
+            payload = {'job':job,'config':{key:config.get(key,{}) for key in ('codex','claude')}}
+            environment = worker_environment(os.environ, workspace)
+            if os.environ.get('PAPER_PAL_DIR'):
+                environment['PAPER_PAL_DIR'] = os.environ['PAPER_PAL_DIR']
+            process = await asyncio.create_subprocess_exec('node',str(self.root/'figure-task.mjs'),
+                cwd=workspace, env=environment, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,start_new_session=True)
+            # Node worker bounds stdout/stderr independently to avoid unbounded communicate buffers.
+            output, errors = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()),self.timeout)
+            if process.returncode == 0:
+                receipt = json.loads(output)
+                if receipt.get('provider') != job['provider'] or receipt.get('model') != job['model']:
+                    raise ValueError('绘图客户端执行回执不符')
+                job['execution'] = receipt
+            (workspace.parent/'worker.log').write_bytes((output+errors)[-65536:])
+            (workspace.parent/'worker.log').chmod(0o600)
+            if process.returncode:
+                raise ValueError('绘图客户端未成功完成，请检查订阅登录与任务日志')
+            candidate = Path(job['candidate_path'])
+            if candidate.is_symlink() or not candidate.resolve().is_relative_to(workspace):
+                raise ValueError('候选图片不能指向暂存目录外部')
+            if (candidate.suffix.lower()=='.pdf' and not candidate.exists()
+                    and (workspace/'candidate.png').is_file()):
+                raster = workspace/'candidate.png'
+                validate_asset(raster)
+                await asyncio.to_thread(package_raster_pdf,raster,candidate)
+                job['raster_packaging'] = {'source':'candidate.png','source_sha256':digest(raster),
+                    'conversion':'Pillow raster to PDF; no image editing'}
+            candidate_hash = validate_asset(candidate)
+            files = safe_tree_files(workspace)
+            terminal.update(status='proposed',finished_at=now(),candidate_sha256=candidate_hash,
+                output_hashes={str(path.relative_to(workspace)):digest(path) for path in files},
+                summary='候选图片已生成；确认采用后才替换原图。')
         except asyncio.CancelledError:
-            job.update(status='error',error='服务停止，绘图任务已中断',finished_at=now())
-            raise
+            terminal.update(status='error',error='服务停止，绘图任务已中断',finished_at=now())
+            cancelled = True
         except asyncio.TimeoutError:
             log=Path(job['manifest_path']).parent/'worker.log'
             descriptor=os.open(log,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
             with os.fdopen(descriptor,'w') as output:
                 output.write(f'Figure worker timed out after {self.timeout} seconds; process group terminated.\n')
-            job.update(status='error',error='绘图超时，请查看任务日志并重试。',finished_at=now())
+            terminal.update(status='error',error='绘图超时，请查看任务日志并重试。',finished_at=now())
         except (OSError, ValueError, TypeError, KeyError, ImportError, RuntimeError, asyncio.TimeoutError) as error:
-            job.update(status='error',error=str(error) or '绘图超时',finished_at=now())
+            terminal.update(status='error',error=str(error) or '绘图超时',finished_at=now())
         finally:
+            # Cancellation must not interrupt process/pipe cleanup. Do not expose
+            # proposed/error until no worker can still write the staging files.
             if process:
-                await self.stop_worker(process)
-            self.persist(job)
+                stopping = asyncio.create_task(self.stop_worker(process))
+                while not stopping.done():
+                    try:
+                        await asyncio.shield(stopping)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                    except Exception:
+                        break
+                try:
+                    stopping.result()
+                except Exception as error:
+                    terminal.update(status='error',error=str(error),finished_at=now())
+            try:
+                job.update(terminal)
+                self.persist(job)
+            finally:
+                if acquired:
+                    self.semaphore.release()
+        if cancelled:
+            raise asyncio.CancelledError
+
 
     def import_candidate(self, slug, figure_id, source, instruction='', provider='local-import', model=None, request_id=None):
         """Trusted local Python seam. Never expose `source` as a public HTTP read."""
@@ -658,7 +768,7 @@ class FigureStudio:
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
-            return
+            pass
         if process.returncode is None:
             try:
                 await asyncio.wait_for(process.wait(), 2)
@@ -668,12 +778,12 @@ class FigureStudio:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
-            return
-        if process.returncode is None:
-            try:
-                await asyncio.wait_for(process.wait(), 2)
-            except asyncio.TimeoutError:
-                raise RuntimeError('Figure worker did not reap after SIGKILL')
+            pass
+        try:
+            # communicate also closes pipe transports after a timed-out reader.
+            await asyncio.wait_for(process.communicate(), 2)
+        except asyncio.TimeoutError:
+            raise RuntimeError('Figure worker did not reap after SIGKILL')
 
     async def cleanup(self, app):
         for task in list(self.tasks):
