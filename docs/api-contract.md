@@ -63,3 +63,7 @@ observations, not a provider-signed audit. No drafts, cookies or conversation
 transcripts are archived in these receipts. Previous threads are suggested only
 when a successful reopen/identity check was recorded (`thread_reusable:true`);
 the worker must verify identity again before using them.
+
+When a worker creates a Page through run-code, it binds the global send guard
+to that same Page using an in-memory target token. The CLI current tab must not
+be assumed to follow a newly created Page. Missing or duplicate targets fail closed.

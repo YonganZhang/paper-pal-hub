@@ -230,3 +230,7 @@ retained. Dependencies and optional translation models retain their own licenses
 PyMuPDF uses AGPL/commercial terms, and the separately downloaded OPUS-MT-derived
 translation model requires CC BY 4.0 attribution. No manuscript, dataset, login,
 AI conversation or model weight is distributed here.
+
+When a worker creates a Page through run-code, it binds the global send guard
+to that same Page using an in-memory target token. The CLI current tab must not
+be assumed to follow a newly created Page. Missing or duplicate targets fail closed.
