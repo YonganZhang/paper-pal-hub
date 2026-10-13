@@ -4,6 +4,7 @@
   if (!input || !chat) return;
   const slug = location.pathname.split('/')[2];
   let session = null;
+  let syncConsultation = () => {};
   const memory = new Map();
   const contexts = new Map();
   const key = id => `paper-hub.draft.${slug}.${id || 'opening'}`;
@@ -27,7 +28,8 @@
     input.value = [read(id),payload.message].filter(Boolean).join('\n\n');
     write(id,input.value);
     const {selectionContext,structureContext,newSessionIfBusy,newSessionForNewSelection}=payload;
-    storeContext(id,{selectionContext,structureContext,newSessionIfBusy,newSessionForNewSelection});
+    storeContext(id,{...contextFor(id),selectionContext,structureContext,newSessionIfBusy,newSessionForNewSelection});
+    syncConsultation();
   });
   input.addEventListener('input', () => write(session, input.value));
   input.addEventListener('keydown', event => {
@@ -36,13 +38,17 @@
   window.addEventListener('paper-hub:chat', event => {
     const id = event.detail.id;
     if (id && id !== session) {
+      const openingContext = !session ? contextFor(null) : null;
       const opening = !session ? input.value : '';
       write(session, input.value);
       session = id;
       input.value = read(id) || opening;
       if (opening) write(id, input.value);
+      if(openingContext?.webConsultation)storeContext(id,{...contextFor(id),...openingContext});
+      if(openingContext)storeContext(null,null);
     }
     if (id) input.dataset.chatSessionId = id;
+    syncConsultation();
   });
   window.addEventListener('paper-hub:chat-sent', event => {
     const {id,fromId,draft,context}=event.detail;
@@ -56,6 +62,7 @@
     const latest=contextFor(fromId);
     if(JSON.stringify(latest)===JSON.stringify(context || {}))storeContext(fromId,null);
     else if(active && id!==fromId)storeContext(id,latest);
+    syncConsultation();
   });
   window.addEventListener('pagehide', () => write(session, input.value));
   // Move, rather than duplicate, the upstream model control and state.
@@ -66,6 +73,14 @@
   const help = document.createElement('p'); help.className = 'hub-ai-help';
   help.textContent = '回车换行 · 点击发送才提交 · 草稿自动保留';
   chat.querySelector('.codex-chat-composer').prepend(help);
+  const consultLabel=document.createElement('label');consultLabel.className='hub-ai-consultation text-button';
+  const consult=document.createElement('input');consult.type='checkbox';consult.id='hub-web-consultation';
+  consultLabel.append(consult,document.createTextNode(' 请 ChatGPT 网页咨询'));
+  consultLabel.title='选中后点击发送才咨询；使用独立标签页，保留已有草稿。';
+  chat.querySelector('.codex-chat-composer-actions').prepend(consultLabel);
+  syncConsultation=()=>{consult.checked=contextFor(session).webConsultation===true;};
+  consult.addEventListener('change',()=>{storeContext(session,{...contextFor(session),webConsultation:consult.checked,consultationRevision:Date.now()+Math.random()});});
+  syncConsultation();
   input.placeholder = '告诉论文 AI 你想讨论或修改什么…';
   const details = document.createElement('details'); details.className = 'hub-ai-workspace';
   const summary = document.createElement('summary'); summary.textContent = '论文 AI 的工作区与技能';

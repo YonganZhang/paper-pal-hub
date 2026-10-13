@@ -15,8 +15,10 @@ import {writeFileSync} from 'node:fs';import path from 'node:path';
 const args=process.argv.slice(2);const get=k=>args[args.indexOf(k)+1];
 if(args[0]==='login'){console.log('Logged in using ChatGPT');process.exit(0);}
 if(args[0]==='auth'){console.log(JSON.stringify({loggedIn:true,authMethod:'claude.ai',apiProvider:'firstParty'}));process.exit(0);}
-for await(const chunk of process.stdin){};
+let prompt='';for await(const chunk of process.stdin)prompt+=chunk;
 writeFileSync(path.join(process.cwd(),'invocation.json'),JSON.stringify(args));
+writeFileSync(${JSON.stringify(path.join(dir,'consult-invocation.json'))},JSON.stringify({args,cwd:process.cwd(),prompt}));
+if(prompt.includes('CONSULT_TIMEOUT')){process.on('SIGTERM',()=>{});setInterval(()=>writeFileSync(path.join(process.cwd(),'late-write.txt'),'running'),20);await new Promise(()=>{});}
 if(args.includes('-p')){console.log('这是 Claude 的可审阅意见。');process.exit(0);}
 writeFileSync(get('--output-last-message'),'这是可审阅的修改意见。');
 `);await fs.chmod(fake,0o755);
@@ -52,6 +54,38 @@ writeFileSync(get('--output-last-message'),'这是可审阅的修改意见。');
     assert.equal(claude.messages.at(-1).provider,'claude');assert.equal(claude.messages.at(-1).model,'haiku');assert.equal(claude.messages.at(-1).reasoningEffort,null);
     const ca=JSON.parse(await fs.readFile(path.join(dir,'invocation.json')));assert.equal(ca[ca.indexOf('--model')+1],'haiku');assert.ok(ca.includes('--strict-mcp-config'));assert.ok(!ca.includes('--effort'));assert.equal(ca[ca.indexOf('--tools')+1],'Read,Glob,Grep');assert.equal(ca.filter(a=>a==='--tools').length,1);
     const cp=await api('/api/chat/create-proposal',{sessionId:claude.id,assistantMessageId:claude.messages.at(-1).id,autoProcess:false});assert.equal(cp.request.provider,'claude');assert.equal(cp.request.model,'haiku');
+    let web=await api('/api/chat/message',{message:'请网页咨询',provider:'codex',model:'model-b',webConsultation:true});web=await answer(web.id);
+    assert.equal([...web.messages].reverse().find(message=>message.role==='user').webConsultation,true);
+    assert.ok(web.messages.at(-1).content.includes('网页咨询尚未完成：'));
+    const captured=JSON.parse(await fs.readFile(path.join(dir,'consult-invocation.json')));
+    assert.equal(captured.args[captured.args.indexOf('--sandbox')+1],'workspace-write');
+    assert.equal(captured.args[captured.args.indexOf('-C')+1],captured.cwd);
+    assert.ok(captured.cwd.startsWith('/tmp/pph-consult-'));
+    assert.ok(captured.prompt.includes('share-web-consultation'));
+    assert.ok(captured.prompt.includes('Repository root: '+dir));
+    for(let i=0;i<60;i++){try{await fs.stat(captured.cwd);}catch{break;}await new Promise(r=>setTimeout(r,25));}
+    await assert.rejects(fs.stat(captured.cwd),{code:'ENOENT'});
+    assert.ok((await fs.readFile(path.join(dir,'main.tex'),'utf8')).includes(original));
+    let ordinary=await api('/api/chat/message',{message:'普通讨论',provider:'codex',webConsultation:'true'});ordinary=await answer(ordinary.id);
+    const plain=JSON.parse(await fs.readFile(path.join(dir,'consult-invocation.json')));
+    assert.equal(plain.cwd,dir);assert.equal(plain.args[plain.args.indexOf('--sandbox')+1],'read-only');
+    await stop();
+    const configuration=JSON.parse(await fs.readFile(path.join(dir,'.paper-pal.json')));configuration.codex.chatTimeoutMs=1000;
+    await fs.writeFile(path.join(dir,'.paper-pal.json'),JSON.stringify(configuration));await start();
+    const timed=await api('/api/chat/message',{message:'CONSULT_TIMEOUT',provider:'codex',webConsultation:true});
+    let failed;
+    for(let i=0;i<180;i++){failed=await api('/api/chat?id='+timed.id);if(failed.status==='failed')break;await new Promise(r=>setTimeout(r,50));}
+    assert.equal(failed.status,'failed');
+    const timedCall=JSON.parse(await fs.readFile(path.join(dir,'consult-invocation.json')));
+    assert.ok(timedCall.prompt.includes('CONSULT_TIMEOUT'));
+    for(let i=0;i<80;i++){try{await fs.stat(timedCall.cwd);}catch{break;}await new Promise(r=>setTimeout(r,25));}
+    await assert.rejects(fs.stat(timedCall.cwd),{code:'ENOENT'});
+    await new Promise(r=>setTimeout(r,100));await assert.rejects(fs.stat(timedCall.cwd),{code:'ENOENT'});
+    await api('/api/chat/message',{message:'CONSULT_SHUTDOWN',provider:'codex',webConsultation:true});
+    let shutdownCall;
+    for(let i=0;i<100;i++){shutdownCall=JSON.parse(await fs.readFile(path.join(dir,'consult-invocation.json')));if(shutdownCall.prompt.includes('CONSULT_SHUTDOWN'))break;await new Promise(r=>setTimeout(r,20));}
+    assert.ok(shutdownCall.prompt.includes('CONSULT_SHUTDOWN'));
+    await stop();await assert.rejects(fs.stat(shutdownCall.cwd),{code:'ENOENT'});
   } finally {await stop();await fs.rm(dir,{recursive:true,force:true});}
 });
 test('backend fails closed on anchor drift',()=>{

@@ -35,3 +35,31 @@ publishing a terminal status or releasing their active-worker slot.
 ## Public release
 
 Export allowlisted app modules, web assets, tests and templates to a clean generated repo under _tmp/public-release; omit _reports, project papers, runtime, credentials, user history and app's private git history. Public source license MIT (upstream attribution retained). Never publish existing repo history. Public README explains dependencies/source pin/install/configuration, no scientific paper data or proprietary content. Runtime source resolution uses PAPER_PAL_DIR or the current HOME. Publish the clean export only after reviewing its exact file manifest.
+
+
+## Optional chat browser consultation
+
+The existing authenticated POST `/api/chat/message` accepts `webConsultation:true`
+as a strict boolean for that user message. Omission, false or a string keeps the
+ordinary read-only chat policy. The frontend stages this choice in the per-session
+unsent draft; toggling it never sends. Only explicit Send posts the frozen choice.
+
+An enabled message uses the selected official subscription CLI and existing
+login, with no API-key fallback. The corresponding worker reads current global
+and project skills itself. Codex uses a private workspace-write scratch and narrow
+browser runtime roots; Claude enables Bash and depends on the explicit tool policy,
+without claiming OS isolation. Original project files are read-only by policy.
+An existing browser draft is a stop condition; the checkbox does not authorize
+clearing or staging it. Original browser tabs are preserved.
+
+The host waits for worker exit before removing scratch, including timeout and
+shutdown paths. Minimal receipts are archived privately at
+`.paper-pal/consultations/<run>/receipt.json`; temporary receipt links in the answer
+are rewritten to that durable location. Missing/invalid completion yields an
+explicit unfinished prefix. A success requires a valid ChatGPT conversation URL,
+workspace label, observed user message and completed assistant reply, original-tab
+preservation, positive send count and zero unexpected sends. These are worker
+observations, not a provider-signed audit. No drafts, cookies or conversation
+transcripts are archived in these receipts. Previous threads are suggested only
+when a successful reopen/identity check was recorded (`thread_reusable:true`);
+the worker must verify identity again before using them.

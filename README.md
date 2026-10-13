@@ -150,6 +150,21 @@ The paper AI panel uses a text draft. Closing the panel or reloading preserves
 unsent text; only the explicit Send action submits it. The application does not
 provide a microphone/voice-recognition control.
 
+Select **请 ChatGPT 网页咨询** beside the composer, then click Send to explicitly
+enable browser consultation for that message. The selected Codex/Claude worker
+reads the current global consultation skill and operates its approved browser
+itself. Unchecked messages retain the ordinary read-only tools. Consultation
+helpers run in a private scratch directory; manuscript changes still require
+review and acceptance. Codex writes are restricted to scratch/tool runtime;
+Claude's Bash workflow relies on instructions and is not an OS sandbox.
+Minimal result receipts are kept in the paper's private `.paper-pal/consultations/`;
+scratch directories are cleaned after the run. A missing login, unrelated draft,
+wrong conversation identity or failed guard is reported as blocked, not a reply.
+The checkbox does not authorize clearing an existing browser draft. Only threads
+that have been reopened and identity-checked are offered for automatic reuse.
+Success receipts must confirm a completed response, original-tab preservation
+and zero unexpected sends. Receipt links remain valid after scratch cleanup.
+
 ## Versions, images and handoff
 
 The first baseline is `0.0`; subsequent explicit archives increment to `1.0`, `2.0`
@@ -200,7 +215,7 @@ manifest paths; `--request-id` supports repeat-safe save/import automation.
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
-node --test tests/backend_contract.test.mjs tests/subscription_contract.test.mjs tests/figure_task_contract.test.mjs tests/runtime_paths.test.mjs
+node --test tests/backend_contract.test.mjs tests/subscription_contract.test.mjs tests/figure_task_contract.test.mjs tests/runtime_paths.test.mjs tests/consultation_contract.test.mjs
 ```
 
 Gateway/backend tests require the pinned upstream checkout. Browser fixture scripts
