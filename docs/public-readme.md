@@ -146,11 +146,9 @@ write access. A tool failure returns its explicit failure receipt instead of
 being hidden behind a missing-image error. Browser consultation follows the
 skill's login, conversation identity and send guards.
 
-Voice input fills an unsent draft. Closing the mobile AI panel, hiding the page,
-or changing conversations cancels recognition and ignores stale callbacks.
-Manual stop may retain the last completed recognition result. Unsupported or
-denied microphone access falls back to keyboard input. The browser voice fixture
-tests event transitions; physical-device recording still requires device testing.
+The paper AI panel uses a text draft. Closing the panel or reloading preserves
+unsent text; only the explicit Send action submits it. The application does not
+provide a microphone/voice-recognition control.
 
 ## Versions, images and handoff
 
