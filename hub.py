@@ -97,6 +97,23 @@ def adapt_asset(name, body, slug):
     prefix = f'/papers/{slug}'
     text = body.decode()
     if name == 'app.js':
+        caption_marker = '    text.textContent = semantic.captionDisplay || semantic.caption;'
+        if text.count(caption_marker) != 1:
+            raise ValueError('Caption renderer anchor changed')
+        text = text.replace(caption_marker, '    renderTableCell(text, semantic.captionFormatted, semantic.captionDisplay || semantic.caption);')
+        caption_offset_marker = '''    const beforeStart = range.cloneRange();
+    beforeStart.selectNodeContents(startCaption);
+    beforeStart.setEnd(range.startContainer, range.startOffset);
+    const displayStart = beforeStart.toString().length;
+    const beforeEnd = range.cloneRange();
+    beforeEnd.selectNodeContents(startCaption);
+    beforeEnd.setEnd(range.endContainer, range.endOffset);
+    const displayEnd = beforeEnd.toString().length;'''
+        if text.count(caption_offset_marker) != 1:
+            raise ValueError('Caption selection mapping anchor changed')
+        text = text.replace(caption_offset_marker,
+                            '    const displayStart = canonicalOffsetAt(startCaption, range.startContainer, range.startOffset, "start");\n'
+                            '    const displayEnd = canonicalOffsetAt(startCaption, range.endContainer, range.endOffset, "end");')
         # API constants and call sites change together, including SSE and PDFs.
         text = text.replace('/api/', prefix + '/api/')
         text = text.replace('[/]api[/]', f'[/]papers[/]{slug}[/]api[/]')

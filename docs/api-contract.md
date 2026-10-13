@@ -86,6 +86,12 @@ request for that same paragraph is coalesced. After success the new result repla
 its saved paragraph. Cached paragraphs return immediately without acquiring the
 generation semaphore or waiting behind four unfinished tasks. Bulk requests remain
 compatible for existing API clients; the UI no longer generates entire chapters.
+Refreshing a paragraph fences older in-flight batches that contain it: they return
+a retryable superseded error and cannot overwrite the new paragraph or aggregate.
+Unrelated completed polling states remain available. Cache-only reads and worker
+completion both bound completed in-memory history; active jobs are retained.
+A different batch containing a currently refreshing paragraph returns429 until
+the refresh completes; the identical single-paragraph request reuses its job.
 
 At most four unfinished jobs and two active workers. Numeric validation accepts
 English small cardinal/ordinal words rendered as numerals and normal thousands
@@ -102,6 +108,12 @@ cache (up to 250 saved paragraphs). Engine selection persists per paper/browser.
 Loading, switching chapters, changing reading view or engine never runs a model.
 Source edits invalidate the affected paragraph; old replies remain bound to their
 source and engine. Waiting time is shown for each clicked paragraph.
+Inline formulas travel as `\(...\)` and are checked unchanged before caching.
+The machine worker translates surrounding prose separately. Original previews
+retain rendered formatting; translated formulas reuse the paragraph's trusted
+formula nodes, with all other model output inserted as text. Media-only blocks
+remain visible without translation buttons or placeholder requests. Configuration
+failures appear in the current paragraph view and can be retried.
 `window.paperHubTranslationSnapshot()` returns
 only current rendered `{path,texts}` for read-only checks/preparation; figure anchor
 IDs and hidden source metadata are excluded. It grants no source-save capability.
@@ -118,7 +130,10 @@ their raw source and block offsets remain available, but they are hidden in read
 Project macros use the configured default manuscript when a make-based build has no
 readable `.tex` entry in its working directory. Include commands inside macro
 definitions are not document-traversal boundaries. Standalone single-argument
-include wrappers use the existing source-root artifact resolver; readable tables
+include wrappers without optional parameters use the existing source-root artifact
+resolver. Only a pure include or a single-include IfFileExists wrapper testing that
+same file is recognized; mixed prose and complex branches are left to the normal
+reader and compiled PDF. Readable tables
 render as tables, otherwise named tables get a compiled-PDF fallback without
 showing an internal filename. No extra read/write roots are granted.
 
@@ -126,3 +141,5 @@ The real front-matter title is a read-only translatable heading. Keyword separat
 render as punctuation. Hidden blocks never enter translation collection, and
 typesetter assignments are rejected before legacy cache lookup (400). Mathematical
 commands and author content are preserved; this is not blanket backslash removal.
+Float captions expose trusted math/style annotations for the same frontend
+renderer used by table cells, while their text/source offsets remain aligned.

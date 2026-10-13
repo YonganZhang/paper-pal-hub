@@ -21,6 +21,11 @@ def translation_revision(engine, glossary, model=None, provider='codex'):
 
 def validate_translation(source, translated, glossary, *, strict=False):
     from collections import Counter
+    # The reader marks inline formulas explicitly; neither engine may rewrite
+    # their contents. Math remains displayable without interpreting model HTML.
+    math_pattern = r'\\\([\s\S]*?\\\)'
+    if Counter(re.findall(math_pattern, source)) != Counter(re.findall(math_pattern, translated)):
+        raise ValueError('Translation changed mathematical expressions')
     # Keep decimals, percentages, signed values and citation years; punctuation
     # surrounding numbers may change naturally between English and Chinese.
     def numbers(text):
@@ -139,9 +144,22 @@ class TranslationJobs:
         self.registry_reader = registry_reader
         self.root = root
         self.jobs = {}
+        self.job_segments = {}
+        self.job_epochs = {}
+        self.segment_epochs = {}
+        self.refreshing = {}
         self.tasks = set()
         self.semaphore = asyncio.Semaphore(2)
         self.python = Path.home() / 'envs/paper-hub-translation/bin/python'
+
+    def trim_history(self, keep):
+        if len(self.jobs) > 100:
+            for old in list(self.jobs):
+                if old != keep and self.jobs[old]['status'] not in ('queued', 'running'):
+                    del self.jobs[old]
+                    self.job_segments.pop(old, None)
+                    if len(self.jobs) <= 80:
+                        break
 
     def paper(self, slug):
         try:
@@ -193,16 +211,26 @@ class TranslationJobs:
             return web.json_response({'error':'翻译配置已更新，请刷新页面后重试。'},status=409)
         digest = cache_digest(engine_id, glossary, texts)
         key = (slug, digest)
+        segments = [(slug, cache_digest(engine_id, glossary, text)) for text in texts]
         existing=self.jobs.get(key)
         if refresh and existing and existing['status'] in ('queued','running'):
             return web.json_response(existing,status=202)
+        if any(self.refreshing[segment] != key for segment in segments if segment in self.refreshing):
+            return web.json_response({'error':'其中一段正在重新翻译，请完成后再试。'},status=429)
         if refresh:
             if sum(j['status'] in ('queued','running') for j in self.jobs.values())>=4:
                 return web.json_response({'error':'翻译任务较多，请稍后再试。'},status=429)
-            # Legacy chapter aggregates must not keep a pre-refresh paragraph.
+            # Fence older in-flight batches before they can overwrite a refresh.
+            refreshed = segments[0]
+            self.segment_epochs[refreshed] = self.segment_epochs.get(refreshed, 0) + 1
+            # Leave unrelated paragraphs/engines and their polling states intact.
             for old_key,old_job in list(self.jobs.items()):
-                if old_key[0]==slug and old_job['status']=='done':self.jobs.pop(old_key)
+                if old_job['status']=='done' and refreshed in self.job_segments.get(old_key, ()):
+                    self.jobs.pop(old_key)
+                    self.job_segments.pop(old_key, None)
             directory=Path(paper['repo'])/'.paper-pal/translations'
+            (directory/('p-'+refreshed[1]+'.json')).unlink(missing_ok=True)
+            self.refreshing[refreshed] = key
             for aggregate in directory.glob('[0-9a-f]*.json'):
                 try:
                     if json.loads(aggregate.read_text()).get('engine')==engine_id:aggregate.unlink()
@@ -243,11 +271,18 @@ class TranslationJobs:
                 if not ready and sum(j['status'] in ('queued', 'running') for j in self.jobs.values())>=4:
                     return web.json_response({'error':'翻译任务较多，请稍后再试。'},status=429)
                 self.jobs[key] = {'id': digest, 'status': 'done' if ready else 'queued', 'translations': translated, 'total': len(texts), 'completed': sum(t is not None for t in translated), 'model': model, 'provider':provider,'revision':revision}
-                if ready:save_cache(cached,{'engine':engine_id,'translations':translated})
+                if ready:
+                    save_cache(cached,{'engine':engine_id,'translations':translated})
+                    if refresh:
+                        self.refreshing.pop(segments[0], None)
+                        if not self.job_epochs:self.segment_epochs.clear()
                 else:
+                    self.job_epochs[key] = {segment:self.segment_epochs.get(segment, 0) for segment in segments}
                     task = asyncio.create_task(self.run(key, texts, cached, glossary, engine_id))
                     self.tasks.add(task)
                     task.add_done_callback(self.tasks.discard)
+        self.job_segments[key] = segments
+        self.trim_history(key)
         return web.json_response(self.jobs[key], status=202)
 
     async def status(self, request):
@@ -264,6 +299,9 @@ class TranslationJobs:
         diagnostics = None
         terminal = None
         acquired = False
+        epochs = self.job_epochs.get(key, {})
+        def superseded():
+            return any(self.segment_epochs.get(segment, 0) != epoch for segment,epoch in epochs.items())
         try:
             await self.semaphore.acquire()
             acquired = True
@@ -295,6 +333,8 @@ class TranslationJobs:
                     if result['index'] != received or received>=len(missing) or not isinstance(result['text'], str) or not result['text'].strip():
                         raise ValueError('Invalid translation result')
                     index=missing[received]
+                    if superseded():
+                        raise ValueError('Translation superseded by paragraph refresh')
                     validate_translation(texts[index],result['text'],glossary,strict=engine_id!=ENGINE)
                     job['translations'][index]=result['text']
                     save_cache(cached.parent/('p-'+cache_digest(engine_id,glossary,texts[index])+'.json'),{'engine':engine_id,'text':result['text']})
@@ -303,6 +343,8 @@ class TranslationJobs:
                 if await process.wait() != 0 or job['completed'] != len(texts):
                     raise ValueError('Translation worker failed')
             await asyncio.wait_for(collect(), 600)
+            if superseded():
+                raise ValueError('Translation superseded by paragraph refresh')
             cached.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             save_cache(cached,{'engine':engine_id,'translations':job['translations']})
             terminal = {'status':'done'}
@@ -326,15 +368,17 @@ class TranslationJobs:
                     self.semaphore.release()
                 if diagnostics:
                     diagnostics.close()
+                if superseded():
+                    terminal = {'status':'error', 'error':'其中一段已重新翻译，请再次点击以读取最新译文。'}
                 if terminal:
                     job.update(terminal)
-                # Bound in-memory history; successful translations remain on disk.
-                if len(self.jobs) > 100:
-                    for old in list(self.jobs):
-                        if old != key and self.jobs[old]['status'] not in ('queued', 'running'):
-                            del self.jobs[old]
-                            if len(self.jobs) <= 80:
-                                break
+                self.job_epochs.pop(key, None)
+                for segment in epochs:
+                    if self.refreshing.get(segment) == key:
+                        self.refreshing.pop(segment, None)
+                live_segments = {segment for pending in self.job_epochs.values() for segment in pending}
+                self.segment_epochs = {segment:epoch for segment,epoch in self.segment_epochs.items() if segment in live_segments}
+                self.trim_history(key)
 
     async def cleanup(self, app):
         for task in self.tasks:

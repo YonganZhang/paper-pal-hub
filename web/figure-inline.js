@@ -42,7 +42,15 @@
       if(changed)window.dispatchEvent(new CustomEvent('paper-hub:figures-rendered'));
     }catch{/* PDF fallback and the figure gallery remain available. */}
   }
-  window.addEventListener('paper-hub:document',render);
-  window.addEventListener('paper-hub:figure-accepted',render);
-  if(editor.children.length)void render();
+  let timer;
+  function schedule(){clearTimeout(timer);timer=setTimeout(render,0);}
+  window.addEventListener('paper-hub:document',schedule);
+  window.addEventListener('paper-hub:figure-accepted',schedule);
+  // Comment composers and revision previews rebuild blocks without navigating.
+  // Observe only direct source children; mounting previews/translation sidecars
+  // must not recursively refetch the figure registry.
+  new MutationObserver(changes=>{
+    if(changes.some(change=>[...change.addedNodes].some(node=>node.nodeType===1&&node.matches('.kind-figure'))))schedule();
+  }).observe(editor,{childList:true});
+  if(editor.children.length)schedule();
 })();

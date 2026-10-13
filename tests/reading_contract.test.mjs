@@ -12,6 +12,9 @@ test('reading classifies template metadata before expansion and preserves real p
 \newcommand{\shorttitle}[1]{\cs_gset:Nn \__short_title: {#1}}
 \newcommand{\meaning}[1]{\emph{#1}}
 \newcommand{\loadtable}[1]{\IfFileExists{table_#1.tex}{\input{table_#1}}{Missing}}
+\newcommand{\picktable}[2][default]{\input{table_#1}}
+\newcommand{\showtable}[1]{Important prose before. \input{table_#1} Important prose after.}
+\newcommand{\conditional}[1]{\IfFileExists{absent.tex}{\input{table_wrong}}{\input{table_#1}}}
 \title{A real manuscript title}
 \begin{document}
 \shorttitle{Only a running header}
@@ -34,6 +37,14 @@ The ratio is $\frac{a}{b}$ and \textbackslash{} is a literal symbol.
 \loadtable{data}
 
 \loadtable{missing}
+
+\picktable{data}
+
+\showtable{data}
+
+\conditional{data}
+
+\begin{figure}\caption{A ratio $\frac{a}{b}$ and $\dagger$ marker; Before \small After}\end{figure}
 \input{chapter}
 \end{document}`;
  await fs.writeFile(path.join(dir,'main.tex'),source);
@@ -54,6 +65,12 @@ The ratio is $\frac{a}{b}$ and \textbackslash{} is a literal symbol.
   const table=visible.find(b=>b.semantic?.caption==='Actual evidence');assert.equal(table.kind,'table');assert.ok(table.semantic.rows.some(row=>row.includes('27')));
   const fallback=visible.find(b=>b.raw.includes('loadtable{missing}'));assert.equal(fallback.kind,'table');assert.equal(fallback.semantic.fallback,true);assert.ok(!fallback.display.includes('table_missing'));
   const chapter=await(await fetch(base+'/api/document?path=chapter.tex')).json();
+  const optional=visible.find(b=>b.raw.trim()==='\\picktable{data}');assert.equal(optional.kind,'paragraph');assert.ok(optional.display.includes('table_default'));
+  const explanatory=visible.find(b=>b.raw.trim()==='\\showtable{data}');assert.equal(explanatory.kind,'paragraph');assert.ok(explanatory.display.includes('Important prose before.')&&explanatory.display.includes('Important prose after.'));
+  const conditional=visible.find(b=>b.raw.trim()==='\\conditional{data}');assert.equal(conditional.kind,'paragraph');assert.ok(!conditional.semantic,'complex conditional wrappers must not guess an artifact');
+  const figure=visible.find(b=>b.kind==='figure');assert.equal(figure.semantic.captionFormatted.annotations.filter(a=>a.type==='math').length,2);
+  const caption=figure.semantic.captionSource,after=caption.display.indexOf('After');assert.ok(after>=0);
+  assert.equal(caption.raw.slice(caption.displayStarts[after],caption.displayEnds[after+4]),'After','caption offsets use the original raw text even after formatting commands');
   assert.ok(chapter.blocks.some(b=>b.kind==='table'&&b.semantic?.caption==='Actual evidence'),'make builds still discover main-file include macros in separate sections');
   for(const b of document.blocks){assert.equal(source.slice(b.start,b.end),b.raw);assert.equal(b.displayStarts.length,b.display.length);assert.equal(b.displayEnds.length,b.display.length);}
   assert.equal(await fs.readFile(path.join(dir,'main.tex'),'utf8'),source);

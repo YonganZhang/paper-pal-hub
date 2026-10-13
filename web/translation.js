@@ -14,14 +14,14 @@
     button.addEventListener('click',()=>{revealReading();choose(id);});toolbar.append(button);buttons[id]=button;
   }
   const engine=document.createElement('select');engine.setAttribute('aria-label','翻译方式');
-  for(const [value,label] of [['ai','精翻'],['offline','机翻']]){const option=document.createElement('option');option.value=value;option.textContent=label;engine.append(option);}
+  for(const [value,label] of [['ai','精翻'],['offline','机翻（阅读草稿）']]){const option=document.createElement('option');option.value=value;option.textContent=label;engine.append(option);}
   try{const selected=localStorage.getItem(preference);if(['ai','offline'].includes(selected))engine.value=selected;}catch{}
   toolbar.append(engine);
   const status=document.createElement('span');status.className='hub-translation-status';status.setAttribute('role','status');toolbar.append(status);
   const header=document.querySelector('.topbar');if(header)header.append(toolbar);else editor.before(toolbar);
   const view=document.createElement('section');view.id='hub-translation-view';view.hidden=true;view.setAttribute('aria-label','中文辅助阅读');editor.after(view);
   function config(reload=false){
-    if(!configuration||reload)configuration=fetch(prefix+'/hub/translation-config').then(async r=>{if(!r.ok)throw new Error('翻译配置读取失败，请重试。');return r.json();});
+    if(!configuration||reload)configuration=fetch(prefix+'/hub/translation-config').then(async r=>{if(!r.ok)throw new Error('翻译配置读取失败，请重试。');return r.json();}).catch(error=>{configuration=null;throw error;});
     return configuration;
   }
   config().catch(error=>{status.textContent=error.message;configuration=null;});
@@ -40,11 +40,17 @@
         }
         node.remove();
       }
-      copy.querySelectorAll('.katex').forEach(n=>n.replaceWith(n.querySelector('annotation')?.textContent||'［公式见原文］'));
-      return {element:el,tag:el.matches('.kind-heading,.paper-title')?'H3':'P',text:copy.textContent.trim()||(visual.length?'［图表或公式］':''),visual:visual.join(''),proposal:el.classList.contains('has-proposal')};
-    }).filter(b=>b.text);
+      for(const child of [copy,...copy.querySelectorAll('*')]){child.removeAttribute('id');if(child.hasAttribute('contenteditable'))child.setAttribute('contenteditable','false');}
+      const prose=copy.cloneNode(true),math=[];
+      copy.querySelectorAll('.katex').forEach(n=>{
+        const latex=n.querySelector('annotation')?.textContent;
+        const token=latex?'\\('+latex+'\\)':'［公式见原文］';
+        math.push({token,node:n.cloneNode(true)});n.replaceWith(token);
+      });
+      return {element:el,tag:el.matches('.kind-heading,.paper-title')?'H3':'P',text:copy.textContent.trim(),prose,math,visual:visual.join(''),proposal:el.classList.contains('has-proposal')};
+    }).filter(b=>b.text||b.visual);
   }
-  window.paperHubTranslationSnapshot=()=>({path,texts:collect().map(b=>b.text)});
+  window.paperHubTranslationSnapshot=()=>({path,texts:collect().filter(b=>b.text).map(b=>b.text)});
   async function stateFor(text,selected=engine.value){
     const currentConfig=await config(),revision=currentConfig.revisions?.[selected];
     if(typeof revision!=='string')throw new Error('翻译配置不完整，请刷新重试。');
@@ -68,8 +74,8 @@
   }
   function summary(){
     const label=engine.value==='ai'?'精翻':'机翻';
-    const ready=records.filter(r=>r.state?.value).length;
-    status.textContent=(mode==='original'?'逐段翻译':'中文辅助阅读')+' · 当前'+label+' · '+ready+'/'+records.length+'段已有译文 · 点击段落旁“翻译本段”';
+    const ready=records.filter(r=>r.state?.value).length,total=records.filter(r=>r.text).length;
+    status.textContent=(mode==='original'?'逐段翻译':'中文辅助阅读')+' · 当前'+label+' · '+ready+'/'+total+'段已有译文 · 点击段落旁“翻译本段”';
   }
   function panel(record,inView){
     const root=document.createElement('aside');root.className='hub-paragraph-tools';root.contentEditable='false';root.setAttribute('aria-label','第'+(record.index+1)+'段翻译');
@@ -88,16 +94,25 @@
     return {root,translate,refresh,collapse,note,result,inView};
   }
   function paintPanel(record,ui){
+    if(!ui)return;
     const state=record.state,value=state?.value||'',pending=!!state?.pending,shown=(ui.inView||record.open)&&!!value;
     ui.translate.disabled=pending;
     ui.translate.textContent=pending?'翻译中…':value?'查看译文':record.changed?'重新翻译':'翻译本段';
     ui.translate.hidden=shown&&!pending;
     ui.refresh.hidden=!value;ui.refresh.disabled=pending;
     ui.collapse.hidden=ui.inView||!shown;
-    ui.result.hidden=!shown;ui.result.textContent=value;
+    ui.result.hidden=!shown;
+    if(ui.value!==value){
+      ui.value=value;ui.result.replaceChildren();
+      for(const part of value.split(/(\\\([\s\S]*?\\\))/g)){
+        const formula=record.math.find(item=>item.token===part);
+        ui.result.append(formula?formula.node.cloneNode(true):document.createTextNode(part));
+      }
+    }
     const parts=[];
     if(pending){parts.push((state.phase==='queued'?'排队等待':state.engine==='ai'?'精翻生成中':'机翻处理中')+' · 已等'+Math.floor((Date.now()-state.started)/1000)+'秒');if(value)parts.push('暂显示上次译文');}
     else if(state?.error)parts.push(state.error);
+    else if(record.error)parts.push(record.error);
     else if(record.changed&&!value)parts.push('原文已修改，请重新翻译');
     else if(value)parts.push((state.engine==='ai'?'精翻':'机翻')+' · 已保存'+(Number.isFinite(state.elapsed)?' · 本次等待'+(state.elapsed/1000).toFixed(1)+'秒':''));
     ui.note.textContent=parts.join(' · ');ui.note.hidden=parts.length===0;
@@ -109,26 +124,31 @@
       const block=document.createElement('div');block.className='hub-translation-block';
       if(record.visual){const media=document.createElement('div');media.className='hub-translation-media';const template=document.createElement('template');template.innerHTML=record.visual;media.append(template.content);block.append(media);}
       // Never hide an untranslated paragraph while its translation is pending.
-      const original=document.createElement(record.tag==='H3'?'h3':'p');original.className='hub-translation-original';original.textContent=record.text;block.append(original);
-      record.original=original;record.reader=panel(record,true);block.append(record.reader.root);view.append(block);
+      if(record.text){
+        const original=document.createElement(record.tag==='H3'?'h3':'p');original.className='hub-translation-original';
+        original.append(...[...record.prose.childNodes].map(node=>node.cloneNode(true)));block.append(original);
+        record.original=original;record.reader=panel(record,true);block.append(record.reader.root);
+      }
+      view.append(block);
     }
     paint();pane.scrollTop=scroll;
   }
   function updateOriginalVisibility(){for(const record of records)if(record.original)record.original.hidden=mode==='chinese'&&!!record.state?.value;}
   function sync(){
     const current=++generation,found=collect(),previous=new Map(records.map(r=>[r.element,r]));
-    for(const record of records)record.inline.root.remove();
+    for(const record of records)record.inline?.root.remove();
     records=found.map((block,index)=>{
       const old=previous.get(block.element),same=old?.text===block.text;
       const record={...block,index,state:same&&old?.state?.engine===engine.value?old.state:null,open:same?old.open:false,changed:old?(!same||old.changed):false};
-      record.inline=panel(record,false);block.element.after(record.inline.root);return record;
+      if(record.text){record.inline=panel(record,false);block.element.after(record.inline.root);}return record;
     });
     if(mode!=='original')buildView();else paint();
-    for(const record of records)void stateFor(record.text).then(state=>{if(current!==generation)return;record.state=state;paintPanel(record,record.inline);if(record.reader)paintPanel(record,record.reader);updateOriginalVisibility();summary();}).catch(error=>{if(current===generation){record.inline.note.textContent=error.message;if(record.reader)record.reader.note.textContent=error.message;}});
+    for(const record of records.filter(r=>r.text))void stateFor(record.text).then(state=>{if(current!==generation)return;record.state=state;record.error='';paintPanel(record,record.inline);if(record.reader)paintPanel(record,record.reader);updateOriginalVisibility();summary();}).catch(error=>{if(current===generation){record.error=error.message;paint();}});
   }
   async function request(record,refresh=false){
     const selected=engine.value;
     try{
+      record.error='';
       const state=record.state?.engine===selected?record.state:await stateFor(record.text,selected);
       const currentRecord=records.find(r=>r.element===record.element&&r.text===record.text);
       if(currentRecord&&selected===engine.value){currentRecord.state=state;currentRecord.open=true;}
@@ -137,7 +157,7 @@
       state.pending=true;state.error='';state.phase='queued';state.started=Date.now();
       if(refresh)try{localStorage.removeItem(localPrefix+'.'+state.key);}catch{}
       queue.push({state,refresh});paint();drain();
-    }catch(error){record.inline.note.textContent=error.message;}
+    }catch(error){record.error=error.message;paint();}
   }
   function drain(){while(active<2&&queue.length){active++;const work=queue.shift();void translate(work).finally(()=>{active--;drain();});}}
   async function translate({state,refresh}){

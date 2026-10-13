@@ -129,6 +129,94 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(job['status'],'done')
             self.assertEqual(job['translations'],['已有译文'])
 
+    async def test_refresh_fences_an_older_inflight_batch(self):
+        self.jobs.python=Path(sys.executable)
+        root=self.jobs.root
+        (root/'translate-worker.py').write_text("import json,sys,time\nfrom pathlib import Path\np=json.load(sys.stdin)\nroot=Path(__file__).parent\nif len(p['texts'])>1:\n (root/'bulk-started').touch()\n while not (root/'release-bulk').exists():time.sleep(.01)\nfor i,t in enumerate(p['texts']):print(json.dumps({'index':i,'text':('旧译文' if len(p['texts'])>1 else '新译文')+t}),flush=True)\n")
+        async def start(texts,**extra):
+            response=await self.client.post('/papers/alpha/hub/translate',json={'texts':texts,**extra})
+            self.assertEqual(response.status,202)
+            return await response.json()
+        async def finished(job):
+            for _ in range(300):
+                current=await(await self.client.get('/papers/alpha/hub/translate/'+job['id'])).json()
+                if current['status'] in ('done','error'):return current
+                await asyncio.sleep(.01)
+            self.fail('Translation race fixture timed out')
+        bulk=await start(['Original','Other'])
+        for _ in range(300):
+            if (root/'bulk-started').exists():break
+            await asyncio.sleep(.01)
+        self.assertTrue((root/'bulk-started').exists())
+        fresh=await finished(await start(['Original'],refresh=True))
+        self.assertEqual(fresh['translations'],['新译文Original'])
+        (root/'release-bulk').touch()
+        self.assertEqual((await finished(bulk))['status'],'error')
+        self.jobs.jobs.clear()
+        self.assertEqual((await finished(await start(['Original','Other'])))['translations'][0],'新译文Original')
+        self.jobs.jobs.clear()
+        self.assertEqual((await finished(await start(['Original','Changed'])))['translations'][0],'新译文Original')
+        self.assertEqual(self.jobs.segment_epochs,{})
+
+    async def test_cache_only_reads_bound_history_and_keep_active_jobs(self):
+        from translation import cache_digest,save_cache
+        directory=Path(self.papers[0]['repo'])/'.paper-pal/translations'
+        active=('beta','active');self.jobs.jobs[active]={'status':'running'}
+        with patch('translation.asyncio.create_subprocess_exec',side_effect=AssertionError('Cache-only read')):
+            for index in range(125):
+                text=f'Paragraph {index}'
+                save_cache(directory/('p-'+cache_digest(ENGINE,{},text)+'.json'),{'engine':ENGINE,'text':f'段落 {index}'})
+                result=await(await self.client.post('/papers/alpha/hub/translate',json={'texts':[text]})).json()
+                self.assertEqual(result['status'],'done')
+        self.assertLessEqual(len(self.jobs.jobs),100)
+        self.assertLessEqual(len(self.jobs.job_segments),100)
+        self.assertIn(active,self.jobs.jobs)
+
+    async def test_new_batch_cannot_read_old_cache_during_refresh(self):
+        from translation import cache_digest,save_cache
+        self.jobs.python=Path(sys.executable)
+        root=self.jobs.root;directory=Path(self.papers[0]['repo'])/'.paper-pal/translations'
+        paragraph=directory/('p-'+cache_digest(ENGINE,{},'Original')+'.json')
+        save_cache(paragraph,{'engine':ENGINE,'text':'旧译文Original'})
+        (root/'translate-worker.py').write_text("import json,sys,time\nfrom pathlib import Path\np=json.load(sys.stdin)\nroot=Path(__file__).parent\nwhile not (root/'release-refresh').exists():time.sleep(.01)\nfor i,t in enumerate(p['texts']):print(json.dumps({'index':i,'text':'新译文'+t}),flush=True)\n")
+        fresh=await(await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original'],'refresh':True})).json()
+        self.assertFalse(paragraph.exists())
+        response=await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original','Other']})
+        self.assertEqual(response.status,429)
+        failed_key=('alpha',cache_digest(ENGINE,{},['Original','Other']))
+        self.jobs.jobs[failed_key]={'status':'error'}
+        response=await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original','Other']})
+        self.assertEqual(response.status,429,'a previous error must not bypass a pending refresh')
+        same=await(await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original']})).json()
+        self.assertEqual(same['id'],fresh['id'])
+        (root/'release-refresh').touch()
+        for _ in range(300):
+            current=await(await self.client.get('/papers/alpha/hub/translate/'+fresh['id'])).json()
+            if current['status']=='done':break
+            await asyncio.sleep(.01)
+        self.assertEqual(current['status'],'done');self.assertEqual(self.jobs.refreshing,{})
+        result=await(await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original','Other']})).json()
+        self.assertEqual(result['translations'][0],'新译文Original')
+
+    async def test_refresh_of_nonlinguistic_identifier_leaves_no_pending_marker(self):
+        result=await(await self.client.post('/papers/alpha/hub/translate',json={'engine':'ai','texts':['table_01_data'],'refresh':True})).json()
+        self.assertEqual(result['status'],'done')
+        self.assertEqual(self.jobs.refreshing,{})
+        self.assertEqual(self.jobs.segment_epochs,{})
+
+    async def test_refresh_preserves_unrelated_completed_polling_states(self):
+        from translation import cache_digest,save_cache
+        directory=Path(self.papers[0]['repo'])/'.paper-pal/translations'
+        save_cache(directory/('p-'+cache_digest(ENGINE,{},'Unrelated')+'.json'),{'engine':ENGINE,'text':'其他段落'})
+        unrelated=await(await self.client.post('/papers/alpha/hub/translate',json={'texts':['Unrelated']})).json()
+        async def fake_run(key,*args):self.jobs.jobs[key].update(status='done',translations=['新译文'],completed=1)
+        with patch.object(self.jobs,'run',side_effect=fake_run):
+            await self.client.post('/papers/alpha/hub/translate',json={'texts':['Original'],'refresh':True})
+            await asyncio.sleep(.01)
+        response=await self.client.get('/papers/alpha/hub/translate/'+unrelated['id'])
+        self.assertEqual(response.status,200)
+        self.assertEqual((await response.json())['translations'],['其他段落'])
+
     async def test_typesetter_assignments_cannot_reuse_legacy_cache_but_math_is_allowed(self):
         from translation import cache_digest,save_cache
         raw=r'\cs_gset:Nn __short_title: BondFusion-TCN'
@@ -262,6 +350,28 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TranslationQualityTests(unittest.TestCase):
+    def test_inline_math_is_preserved_by_validation_and_machine_worker(self):
+        import io,runpy,types
+        formula=r'\(\operatorname{F1}=\frac{2PR}{P+R}\)'
+        source='The metric '+formula+' is reported.'
+        validate_translation(source,'指标'+formula+'已报告。',{})
+        for result in ['指标已报告。',r'指标\(\frac{3PR}{P+R}\)已报告。']:
+            with self.assertRaises(ValueError):validate_translation(source,result,{})
+        calls=[]
+        class Translator:
+            def translate(self,text):
+                self_test.assertNotIn('\\',text)
+                calls.append(text)
+                return '译文'
+        self_test=self
+        argos=types.ModuleType('argostranslate');module=types.ModuleType('argostranslate.translate')
+        module.get_translation_from_codes=lambda *args:Translator();argos.translate=module
+        output=io.StringIO()
+        with patch.dict(sys.modules,{'argostranslate':argos,'argostranslate.translate':module}),patch('sys.stdin',io.StringIO(json.dumps({'texts':[source],'glossary':{}}))),patch('sys.stdout',output),patch.dict(os.environ):
+            runpy.run_path(str(Path(__file__).resolve().parents[1]/'translate-worker.py'))
+        self.assertEqual(json.loads(output.getvalue())['text'],'译文'+formula+'译文')
+        self.assertEqual(calls,['The metric ',' is reported.'])
+
     def test_numeric_percentage_and_protected_class_integrity(self):
         glossary={'Good':{'target':'Good','variants':[]}}
         validate_translation('Recall for Good is 0.65, not 0.91.','Good的召回率为0.65，而不是0.91。',glossary,strict=True)

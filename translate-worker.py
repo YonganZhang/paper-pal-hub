@@ -23,10 +23,17 @@ if translator is None:
     raise SystemExit('English → Chinese model is not installed')
 for index, text in enumerate(texts):
     # NDJSON lets the gateway publish genuine progress, even for long sections.
-    result = translator.translate(text) if any('a' <= c.lower() <= 'z' for c in text) else text
-    for term, rule in glossary.items():
-        pattern=r'(?<![A-Za-z])'+re.escape(term).replace(r'\ ',r'[\s-]+')+r'(?![A-Za-z])'
-        if re.search(pattern,text,re.IGNORECASE):
-            for variant in rule['variants']:
-                result = re.sub(re.escape(variant),lambda match:rule['target'],result,flags=re.IGNORECASE)
+    parts=[]
+    for part in re.split(r'(\\\([\s\S]*?\\\))', text):
+        if part.startswith('\\(') and part.endswith('\\)'):
+            parts.append(part)
+            continue
+        result = translator.translate(part) if any('a' <= c.lower() <= 'z' for c in part) else part
+        for term, rule in glossary.items():
+            pattern=r'(?<![A-Za-z])'+re.escape(term).replace(r'\ ',r'[\s-]+')+r'(?![A-Za-z])'
+            if re.search(pattern,part,re.IGNORECASE):
+                for variant in rule['variants']:
+                    result = re.sub(re.escape(variant),lambda match:rule['target'],result,flags=re.IGNORECASE)
+        parts.append(result)
+    result=''.join(parts)
     print(json.dumps({'index': index, 'text': result}, ensure_ascii=False), flush=True)

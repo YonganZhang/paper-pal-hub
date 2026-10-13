@@ -40,8 +40,22 @@ async function paperHubIncludedMacroArtifact(block,relativePath,macros,reference
   const call=/^\s*\\([A-Za-z@]+)\s*\{([^{}\r\n]+)\}\s*$/.exec(maskLatex(block.raw));
   if(!call)return null;
   const macro=macros.get(call[1]);
-  if(macro?.params!==1)return null;
-  const include=/\\(?:input|include)\s*\{([^{}]+)\}/.exec(macro.body||"");
+  if(macro?.params!==1||macro.optional!=null)return null;
+  let body=maskLatex(macro.body||"").trim();
+  const pureInclude=/^\\(?:input|include)\s*\{([^{}]+)\}\s*$/;
+  if(body.startsWith("\\IfFileExists")){
+    let at="\\IfFileExists".length;const args=[];
+    for(let index=0;index<3;index++){
+      while(/\s/.test(body[at]||"")&&at<body.length)at++;
+      const group=braceGroupAt(body,at);if(!group)return null;
+      args.push(group.value);at=group.end;
+    }
+    const included=pureInclude.exec(args[1].trim());
+    const normalize=value=>value.trim().replace(/\.tex$/,"");
+    if(body.slice(at).trim()||!included||normalize(args[0])!==normalize(included[1])||/\\(?:input|include)\b/.test(args[2]))return null;
+    body=args[1].trim();
+  }
+  const include=pureInclude.exec(body);
   if(!include)return null;
   const target=include[1].replace(/#1/g,call[2]);
   if(/#[1-9]/.test(target))return null;
@@ -56,6 +70,13 @@ async function paperHubIncludedMacroArtifact(block,relativePath,macros,reference
     '    const includedMacro = await paperHubIncludedMacroArtifact(block, relativePath, macros, references);\n'+
     '    if(includedMacro)block={...block,kind:includedMacro.artifactType};\n'+
     '    const rawSemantic = includedMacro || await semanticBlock(block, relativePath, macros, references);');
+  // Float captions use the same trusted math/style renderer as table cells.
+  const captionRenderAnchor='    const captionRendered = normalizeCaptionDisplay(renderTex(captionRaw, macros, references));';
+  if(source.split(captionRenderAnchor).length!==3)throw new Error('Caption math anchor changed');
+  source=source.replaceAll(captionRenderAnchor,'    const captionRendered = latexToDisplay(captionRaw, "paragraph", macros, references);');
+  const captionAnchor='      captionDisplay: captionRendered.display,';
+  if(source.split(captionAnchor).length!==3)throw new Error('Caption formatting anchor changed');
+  source=source.replaceAll(captionAnchor,captionAnchor+'\n      captionFormatted: {text:captionRendered.display,annotations:captionRendered.annotations||[],styles:captionRendered.styles||[]},');
   replaceOnce('  return normalizeProvider(requested, defaultProvider);',
     '  const provider = normalizeProvider(requested, defaultProvider);\n  if (!["codex", "claude"].includes(provider)) throw new HttpError(400, "论文 AI 仅支持 Codex / Claude 订阅登录。");\n  return provider;');
   replaceOnce('    model = providerModel(provider, config, { chat: true });',
