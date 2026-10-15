@@ -44,8 +44,10 @@ async page=>{
   await page.evaluate(()=>window.dispatchEvent(new CustomEvent('paper-hub:figures-rendered')));
   await page.waitForTimeout(700);
   check(await page.evaluate(()=>document.body.dataset.mobilePanel==='ai'),'background translation refresh preserves open AI panel');
+  check(await page.locator('.topbar').isHidden(),'focused AI hides document translation tools');
+  await page.locator('#close-codex-chat').click();
   await page.getByRole('button',{name:'英文原文',exact:true}).click();
-  check(await page.evaluate(()=>!document.body.dataset.mobilePanel),'explicit language click returns from AI to reading');
+  check(await page.evaluate(()=>!document.body.dataset.mobilePanel),'closing focused AI restores English reading');
   await page.getByRole('button',{name:'英文原文',exact:true}).click();
   check(await page.evaluate(()=>JSON.stringify(window.paperHubTranslationSnapshot().texts))===source,'switching to English preserves source');
   await chinese.click();

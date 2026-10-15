@@ -16,7 +16,7 @@ async page => {
     const draft=await input.inputValue();
     const context=await page.evaluate(id=>window.paperHubChatContext(id),id);
     check(!!context.selectionContext,'Selected passage context missing');
-    await page.locator('.hub-close-panel').click();
+    await page.locator('#close-codex-chat').click();
     await page.reload();
     await page.locator('.hub-mobile-nav [data-panel=ai]').click();
     await page.waitForFunction(()=>!!document.querySelector('#codex-chat-input').dataset.chatSessionId);

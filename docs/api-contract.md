@@ -143,3 +143,21 @@ typesetter assignments are rejected before legacy cache lookup (400). Mathematic
 commands and author content are preserved; this is not blanket backslash removal.
 Float captions expose trusted math/style annotations for the same frontend
 renderer used by table cells, while their text/source offsets remain aligned.
+
+## Focused phone chat
+
+At widths up to 1100px, opening Paper AI hides the document toolbar/navigation and
+uses the visual viewport for the chat pane. Closing AI restores manuscript reading.
+The header retains history, More and close; provider/model, new chat, context,
+workspace guidance and consultation are reused inside collapsed `#hub-ai-options`.
+History and More open independently. Enabled consultation has a visible badge.
+Desktop keeps its document tools and visible model settings.
+
+Touch swipes or mouse-wheel gestures over messages minimize the composer; automatic
+transcript scrolling does not. `#hub-ai-resume-input` restores and focuses the same
+textarea. Minimizing never clears a draft or sends a message. Stop remains usable
+when generation is active; Enter remains a newline and only Send submits. Keyboard
+visual-viewport changes resize the pane, while short screens keep the input/actions
+inside the visible area. The chat protocol, subscription and project skills do not
+change. `tests/chat-focus-server.py` is a loopback fixture with synthetic chat APIs
+and no provider calls; its QA endpoints are not part of production.

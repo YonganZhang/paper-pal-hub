@@ -30,7 +30,7 @@
     'Message the agent about this project…':'告诉论文 AI 你想讨论或修改什么…',
     'Message Codex about this project…':'告诉论文 AI 你想讨论或修改什么…',
     'Message the agent':'与论文 AI 对话','Return to comments':'返回批注',
-    'Ready':'就绪','Thinking…':'思考中…','Queued':'排队中','Running':'处理中','Stopped':'已停止',
+    'Ready':'就绪','Thinking…':'思考中…','Queued':'排队中','Running':'处理中','Stopped':'已停止','Working…':'正在生成…','Working...':'正在生成…','Preparing…':'准备中…','Needs attention':'需要检查','Interrupted':'已中断',
     'Send':'发送','Stop':'停止生成','Cancel':'取消','Close':'关闭','Delete':'删除',
     'No saved chats yet.':'暂无历史对话。','Show more':'展开更多','Show less':'收起',
     'Generate reviewable edit':'生成修改候选','View in Comments':'查看修改候选',

@@ -8,6 +8,7 @@ async page=>{
   await page.waitForFunction(()=>document.querySelector('#codex-chat-input').dataset.chatSessionId);
   async function newChat(){
     const previous=await input.getAttribute('data-chat-session-id');
+    if(!await page.locator('#new-codex-chat').isVisible())await page.locator('#hub-ai-options-toggle').click();
     await page.locator('#new-codex-chat').click();
     await page.waitForFunction(id=>document.querySelector('#codex-chat-input').dataset.chatSessionId!==id,previous);
     return input.getAttribute('data-chat-session-id');

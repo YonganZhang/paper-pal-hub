@@ -37,6 +37,7 @@ REQUIRED = (
     'tests/browser_figure_studio.js', 'tests/browser_text_input.js', 'tests/browser_figure_inline.js', 'tests/browser_consultation_fill.js', 'tests/browser_translation_visible.js', 'tests/browser_translation_races.js', 'tests/browser_translation_quality.js',
     'tests/browser_retry_identity.js', 'tests/browser_paragraph_translation.js', 'tests/browser_paragraph_live.js', 'tests/browser_reading_source.js', 'tests/test_portability.py',
     'tests/runtime_paths.test.mjs', 'tests/browser_translation_semantics.js', 'tests/browser_translation_math_live.js', 'tests/browser_figure_remount.js',
+    'tests/chat-focus-server.py', 'tests/browser_chat_focus.js', 'tests/browser_chat_focus_public.js',
 )
 OPTIONAL = ('docs/local-cli.md',)
 README_SOURCE = 'docs/public-readme.md'

@@ -8,6 +8,7 @@ async page => {
   const input=page.locator('#codex-chat-input');
   const first=await input.getAttribute('data-chat-session-id');
   await input.fill('会话甲的未发送草稿');
+  if(!await page.locator('#new-codex-chat').isVisible())await page.locator('#hub-ai-options-toggle').click();
   await page.locator('#new-codex-chat').click();
   await page.waitForFunction(id=>document.querySelector('#codex-chat-input').dataset.chatSessionId!==id,first);
   const second=await input.getAttribute('data-chat-session-id');
@@ -25,6 +26,7 @@ async page => {
     await route.continue({postData:JSON.stringify({...sent,autoProcess:false})});
   });
   try {
+    if(!await page.locator('#agent-model').isVisible())await page.locator('#hub-ai-options-toggle').click();
     await page.locator('#agent-model').selectOption('gpt-6.1-sol');
     await page.locator('#send-codex-chat').click();
     await page.waitForFunction(()=>document.querySelector('#codex-chat-input').value==='');
